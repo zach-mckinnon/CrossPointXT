@@ -1,0 +1,44 @@
+name: Heltec E213 bring-up
+
+on:
+  push:
+    branches:
+      - port/heltec-e213-v1_1
+    paths:
+      - platformio.ini
+      - src/targets/heltec_e213/**
+      - test/heltec_e213/**
+      - .github/workflows/e213-build.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pager-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and test TXT pagination
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic \
+            test/heltec_e213/pager_test.cpp -o /tmp/e213-pager-test
+          /tmp/e213-pager-test
+
+  build-e213:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pioarduino
+        run: pip install -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
+      - name: Build ESP32-S3 firmware (NOT hardware-tested)
+        run: pio run -e heltec_e213
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crosspointxt-e213-unverified
+          path: .pio/build/heltec_e213/firmware.bin
+          if-no-files-found: error
