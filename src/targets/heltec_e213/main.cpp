@@ -35,7 +35,7 @@ constexpr char kProgressPath[] = "/.e213-state.txt";
 constexpr char kProgressTemp[] = "/.e213-state.tmp";
 
 GxEPD2_BW<GxEPD2_213_E0213A367, GxEPD2_213_E0213A367::HEIGHT> display(
-    GxEPD2_213_E0213A367(kDisplayCs, kDisplayDc, kDisplayReset, kDisplayBusy));
+    GxEPD2_213_E0213A367(kDisplayCs, kDisplayDc, kDisplayReset, kDisplayBusy, SPI));
 SPIClass sdBus(HSPI);  // Independent bus: e-ink stays on global SPI.
 
 struct Book {
