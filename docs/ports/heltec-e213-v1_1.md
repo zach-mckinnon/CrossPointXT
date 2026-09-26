@@ -128,3 +128,6 @@ esptool --chip esp32s3 -p COM10 write-flash 0x0 .\meshtastic-backup.bin
 \`\`\`
 
 Confirm your actual backup filename and COM port first. Keep the image private, as it can contain stored configuration and credentials.
+
+
+**Important:** The GitHub Actions artifact currently contains the **application `firmware.bin` only**. Do not write it by itself over Meshtastic with `esptool`: the old bootloader/partition table may not match this target's `partitions.csv`. Use the PlatformIO `upload` command above to flash the matched bootloader, partition table, and firmware together. The Actions build proves compilation, not safe boot on the actual E213.
