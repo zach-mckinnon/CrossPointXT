@@ -1,7 +1,6 @@
 #include <Arduino.h>
-#include <GxEPD2_BW.h>
+#include <heltec-eink-modules.h>
 #include <LittleFS.h>
-#include <SPI.h>
 
 #include <algorithm>
 #include <string>
@@ -15,13 +14,6 @@
 // - one scratch document stored in internal flash
 // - e-ink partial refresh with a typing-friendly debounce
 namespace {
-constexpr uint8_t kDisplayPower = 18;  // E213 V1.1: active HIGH.
-constexpr uint8_t kDisplaySck = 4;
-constexpr uint8_t kDisplayMosi = 6;
-constexpr uint8_t kDisplayCs = 5;
-constexpr uint8_t kDisplayDc = 2;
-constexpr uint8_t kDisplayReset = 3;
-constexpr uint8_t kDisplayBusy = 1;
 constexpr uint8_t kNextButton = 21;   // USER, active LOW.
 constexpr uint8_t kSelectButton = 0;  // BOOT; do not hold during reset.
 
@@ -40,8 +32,9 @@ constexpr unsigned long kRenderMaxDelayMs = 900;
 constexpr unsigned long kAutosaveDelayMs = 1800;
 constexpr unsigned long kPairingRefreshMs = 1000;
 
-GxEPD2_BW<GxEPD2_213_E0213A367, GxEPD2_213_E0213A367::HEIGHT> display(
-    GxEPD2_213_E0213A367(kDisplayCs, kDisplayDc, kDisplayReset, kDisplayBusy, SPI));
+// Vision Master E213 V1.1 uses the E0213A367-BW panel. This board-specific
+// driver also owns the Vext power sequencing required by the integrated panel.
+EInkDisplay_VisionMasterE213V1_1 display;
 
 BleWriterKeyboard keyboard;
 
@@ -102,12 +95,11 @@ std::string cropped(const std::string& value, const size_t maxChars) {
   return value.substr(0, maxChars - 1) + "~";
 }
 
-void setRefreshWindow(const bool forceFull = false) {
-  if (forceFull || screenRefreshCount++ % 18 == 0) {
-    display.setFullWindow();
-  } else {
-    display.setPartialWindow(0, 0, display.width(), display.height());
-  }
+void prepareDisplayFrame() {
+  display.fullscreen();
+  display.clearMemory();
+  display.setTextColor(BLACK);
+  display.setTextSize(1);
 }
 
 std::vector<VisualLine> buildVisualLines() {
@@ -178,12 +170,8 @@ int cursorColumn(const VisualLine& line) {
 }
 
 void renderPairing(const bool forceFull = false) {
-  setRefreshWindow(forceFull);
-  display.firstPage();
-  do {
-    display.fillScreen(GxEPD_WHITE);
-    display.setTextColor(GxEPD_BLACK);
-    display.setTextSize(1);
+  (void)forceFull;
+  prepareDisplayFrame();
 
     display.setCursor(6, 9);
     display.println("E213 MICRO WRITER");
@@ -223,7 +211,7 @@ void renderPairing(const bool forceFull = false) {
     } else {
       display.print("BLE keyboards only");
     }
-  } while (display.nextPage());
+  display.update();
 
   lastRenderAt = millis();
   lastPairingRenderAt = lastRenderAt;
@@ -236,12 +224,8 @@ void renderWriter(const bool forceFull = false) {
                                ? activeLine - static_cast<size_t>(kVisibleRows - 1)
                                : 0;
 
-  setRefreshWindow(forceFull);
-  display.firstPage();
-  do {
-    display.fillScreen(GxEPD_WHITE);
-    display.setTextColor(GxEPD_BLACK);
-    display.setTextSize(1);
+  (void)forceFull;
+  prepareDisplayFrame();
 
     display.setCursor(6, 9);
     display.print("DRAFT");
@@ -277,7 +261,7 @@ void renderWriter(const bool forceFull = false) {
     } else {
       display.print("Saved internally");
     }
-  } while (display.nextPage());
+  display.update();
 
   lastRenderAt = millis();
   renderPending = false;
@@ -460,19 +444,17 @@ void handlePairingButtons() {
 void setup() {
   pinMode(kNextButton, INPUT_PULLUP);
   pinMode(kSelectButton, INPUT_PULLUP);
-  pinMode(kDisplayPower, OUTPUT);
-  digitalWrite(kDisplayPower, HIGH);
-
   Serial.begin(115200);
   delay(250);
   Serial.printf("E213 writer bring-up: flash=%lu psram=%lu\n",
                 static_cast<unsigned long>(ESP.getFlashChipSize()),
                 static_cast<unsigned long>(ESP.getPsramSize()));
 
-  SPI.begin(kDisplaySck, -1, kDisplayMosi, kDisplayCs);
-  display.init(115200);
-  display.setRotation(1);
-  Serial.printf("E-ink: %dx%d\n", display.width(), display.height());
+  Serial.println("Initializing E213 V1.1 E0213A367-BW display...");
+  display.begin();
+  display.landscape();
+  display.clear();
+  Serial.printf("E-ink ready: %dx%d\n", display.width(), display.height());
 
   storageReady = loadDraft();
   Serial.printf("Internal draft storage: %s (%u bytes loaded)\n",
