@@ -82,7 +82,6 @@ size_t cursor = 0;
 bool storageReady = false;
 bool dirty = false;
 bool renderPending = true;
-uint32_t screenRefreshCount = 0;
 uint32_t lastKeyboardStatusVersion = 0;
 unsigned long lastEditAt = 0;
 unsigned long lastKeyAt = 0;
@@ -175,7 +174,7 @@ void renderPairing(const bool forceFull = false) {
 
     display.setCursor(6, 9);
     display.println("E213 MICRO WRITER");
-    display.drawFastHLine(0, 14, display.width(), GxEPD_BLACK);
+    display.drawFastHLine(0, 14, display.width(), BLACK);
 
     display.setCursor(6, 27);
     display.println(keyboard.statusText());
@@ -202,7 +201,7 @@ void renderPairing(const bool forceFull = false) {
       }
     }
 
-    display.drawFastHLine(0, 110, display.width(), GxEPD_BLACK);
+    display.drawFastHLine(0, 110, display.width(), BLACK);
     display.setCursor(6, 119);
     if (keyboard.isConnecting()) {
       display.print("Connecting...");
@@ -234,7 +233,7 @@ void renderWriter(const bool forceFull = false) {
     display.setCursor(146, 9);
     display.print(document.size());
     display.print(" bytes");
-    display.drawFastHLine(0, 14, display.width(), GxEPD_BLACK);
+    display.drawFastHLine(0, 14, display.width(), BLACK);
 
     for (int row = 0; row < kVisibleRows; ++row) {
       const size_t index = firstLine + static_cast<size_t>(row);
@@ -246,11 +245,11 @@ void renderWriter(const bool forceFull = false) {
       if (index == activeLine) {
         const int column = std::min(cursorColumn(lines[index]), kCharactersPerLine);
         const int x = std::min(display.width() - 2, kTextLeft + column * 6);
-        display.drawFastVLine(x, baseline - 7, 8, GxEPD_BLACK);
+        display.drawFastVLine(x, baseline - 7, 8, BLACK);
       }
     }
 
-    display.drawFastHLine(0, 110, display.width(), GxEPD_BLACK);
+    display.drawFastHLine(0, 110, display.width(), BLACK);
     display.setCursor(6, 119);
     if (!keyboard.isConnected()) {
       display.print("Keyboard disconnected");
