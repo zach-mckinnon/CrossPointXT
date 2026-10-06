@@ -7,6 +7,7 @@ on:
     paths:
       - platformio.ini
       - src/targets/heltec_e213/**
+      - src/targets/heltec_e213_writer/**
       - test/heltec_e213/**
       - .github/workflows/e213-build.yml
   workflow_dispatch:
@@ -41,4 +42,22 @@ jobs:
         with:
           name: crosspointxt-e213-unverified
           path: .pio/build/heltec_e213/firmware.bin
+          if-no-files-found: error
+
+  build-e213-writer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pioarduino
+        run: pip install -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
+      - name: Build ESP32-S3 BLE writer firmware (NOT hardware-tested)
+        run: pio run -e heltec_e213_writer
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crosspointxt-e213-writer-unverified
+          path: .pio/build/heltec_e213_writer/firmware.bin
           if-no-files-found: error
