@@ -314,7 +314,9 @@ bool loadDraft() {
     fileList = writerfiles::list();
   }
   if (fileList.empty()) return false;
-  activeName = fileList.front();
+  std::string previous;
+  activeName = writerfiles::readActiveName(previous) && writerfiles::exists(previous)
+                 ? previous : fileList.front();
   return writerfiles::read(activeName, document);
 }
 
@@ -332,6 +334,8 @@ bool switchDraft(const std::string& name) {
   activeName = name;
   document.swap(next);
   cursor = document.size();
+  if (!writerfiles::saveActiveName(name))
+    Serial.println("Warning: active draft preference not saved");
   fileMenu = false;
   renderPending = true;
   lastKeyAt = millis();
