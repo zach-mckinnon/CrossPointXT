@@ -102,6 +102,13 @@ bool save(const std::string& name, const std::string& content) {
   if (!validName(name) || content.size()>kMaxDocumentBytes) return false;
   return atomicWrite(pathFor(name),content);
 }
+bool readActiveName(std::string& name) {
+  if (!readPath("/.active", name, 48)) return false;
+  return validName(name);
+}
+bool saveActiveName(const std::string& name) {
+  return validName(name) && atomicWrite("/.active", name);
+}
 bool readManifest(std::string& content) {
   return readPath("/.sync",content,16384);
 }
