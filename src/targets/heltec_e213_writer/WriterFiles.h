@@ -14,6 +14,8 @@ std::string nextName();
 bool exists(const std::string& name);
 bool read(const std::string& name, std::string& content);
 bool save(const std::string& name, const std::string& content);
+bool readActiveName(std::string& name);
+bool saveActiveName(const std::string& name);
 bool readManifest(std::string& content);
 bool saveManifest(const std::string& content);
 }
