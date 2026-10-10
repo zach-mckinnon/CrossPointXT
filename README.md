@@ -1,4 +1,17 @@
-# CrossPointXT
+# CrossPointXT — personal E213 Micro Writer fork
+
+> **Personal development branch:** [dev](https://github.com/zach-mckinnon/CrossPointXT/tree/dev).
+> This fork is being customized for the Heltec Vision Master E213 V1.1, Bluetooth
+> keyboard, distraction-free multi-draft writing, and local Plot & Jot sync.
+> It is **not intended for upstream submission**. The default master branch
+> retains the original Xteink-targeted code; development is on dev.
+>
+> See [E213 micro-writer setup and sync](docs/e213-micro-writer.md) for the
+> implemented USB/internal-flash workflow and safety constraints.
+>
+> The E213 target is an independent bring-up application, not yet the full
+> Xteink EPUB reader port.
+
 
 [![Fund upstream contributors](https://img.shields.io/badge/%F0%9F%91%91_Fund_upstream_contributors-royalty.dev-BB953A?style=for-the-badge&labelColor=1a1a1a)](https://app.royalty.dev/crosspoint-reader/crosspoint-reader)
 
