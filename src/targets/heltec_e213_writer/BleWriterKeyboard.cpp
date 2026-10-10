@@ -241,12 +241,20 @@ void BleWriterKeyboard::handleReport(const uint8_t* data, size_t length) {
 
   const uint8_t modifiers = data[0];
   const bool shifted = (modifiers & 0x22) != 0;
+  const bool ctrl = (modifiers & 0x11) != 0;
   const uint8_t* keys = data + 2;
 
   for (int i = 0; i < 6; ++i) {
     const uint8_t keyCode = keys[i];
     if (keyCode == 0 || keyAlreadyDown(keyCode, previousKeys)) continue;
 
+    // Ctrl shortcuts are commands, not text: never insert a literal O/N/S.
+    if (ctrl) {
+      if (keyCode == 0x12) pushEvent(KeyEvent{KeyType::OpenFiles}); // Ctrl+O
+      if (keyCode == 0x11) pushEvent(KeyEvent{KeyType::NewFile}); // Ctrl+N
+      if (keyCode == 0x16) pushEvent(KeyEvent{KeyType::SaveFile}); // Ctrl+S
+      continue;
+    }
     if (const char character = keyCodeToAscii(keyCode, shifted); character != '\0') {
       pushEvent(KeyEvent{KeyType::Character, character});
       continue;
