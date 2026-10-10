@@ -547,7 +547,13 @@ void loop() {
 
   const bool connected = keyboard.isConnected();
   if (connected) {
-    handleKeyboardEvents();
+    if (serialSync.busy()) {
+      // Do not accept keystrokes into a document while USB is replacing it.
+      BleWriterKeyboard::KeyEvent discarded;
+      while (keyboard.popEvent(discarded)) {}
+    } else {
+      handleKeyboardEvents();
+    }
 
     if (dirty && storageReady && millis() - lastEditAt >= kAutosaveDelayMs) {
       if (saveDraft()) {
