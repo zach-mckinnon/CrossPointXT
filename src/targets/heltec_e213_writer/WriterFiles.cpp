@@ -67,7 +67,15 @@ std::vector<std::string> list() {
     std::string path=file.name();
     size_t slash=path.find_last_of('/');
     const std::string name=path.substr(slash==std::string::npos ? 0 : slash+1);
-    if (!file.isDirectory() && validName(name)) names.push_back(name);
+    if (!file.isDirectory()) {
+      if (validName(name)) names.push_back(name);
+      else if (name.size() > 4 && name.substr(name.size() - 4) == ".bak") {
+        const std::string original = name.substr(0, name.size() - 4);
+        // Power loss between backup and replace must not hide the only draft.
+        if (validName(original) && !LittleFS.exists(pathFor(original).c_str()))
+          names.push_back(original);
+      }
+    }
     file=folder.openNextFile();
   }
   std::sort(names.begin(),names.end());
