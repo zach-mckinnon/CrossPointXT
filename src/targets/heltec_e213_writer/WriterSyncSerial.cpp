@@ -5,6 +5,7 @@
 #include <mbedtls/md.h>
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 namespace {
@@ -119,6 +120,7 @@ void WriterSyncSerial::onLine(const std::string& line) {
     if (rc != 0 || payload_.size() + written > expectedLength_) { abort("bad-data"); return; }
     payload_.append(reinterpret_cast<const char*>(decoded), written);
     lastChunkAt_ = millis();
+    emit("ACK"); // Backpressure: prevent overrunning USB buffers while e-ink refreshes.
     return;
   }
   if (args[0] == "HELLO" && args.size() == 1) { emit("READY"); return; }
@@ -133,12 +135,10 @@ void WriterSyncSerial::onLine(const std::string& line) {
   }
   if (args[0] == "GET" && args.size() == 2) { sendGet(args[1]); return; }
   if (args[0] == "PUT" && args.size() == 4) {
-    try {
-      const size_t requested=static_cast<size_t>(std::stoul(args[3]));
-      beginPut(args[1],args[2],requested);
-    } catch (...) {
-      emit("ERR|invalid-length");
-    }
+    char* tail = nullptr;
+    const unsigned long requested = strtoul(args[3].c_str(), &tail, 10);
+    if (args[3].empty() || !tail || *tail != '\0') emit("ERR|invalid-length");
+    else beginPut(args[1], args[2], static_cast<size_t>(requested));
     return;
   }
   emit("ERR|unknown-command");
