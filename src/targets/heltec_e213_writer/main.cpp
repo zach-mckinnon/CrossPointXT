@@ -7,19 +7,18 @@
 #include <vector>
 
 #include "BleWriterKeyboard.h"
+#include "WriterFiles.h"
 
 // E213 writer bring-up:
 // - no microSD required
 // - BLE HID keyboard input
-// - one scratch document stored in internal flash
+// - recoverable multi-document library stored in internal flash
 // - e-ink partial refresh with a typing-friendly debounce
 namespace {
 constexpr uint8_t kNextButton = 21;   // USER, active LOW.
 constexpr uint8_t kSelectButton = 0;  // BOOT; do not hold during reset.
 
-constexpr char kDraftPath[] = "/draft.txt";
-constexpr char kDraftTempPath[] = "/draft.tmp";
-constexpr size_t kMaxDraftBytes = 64 * 1024;
+constexpr size_t kMaxDraftBytes = writerfiles::kMaxDocumentBytes;
 
 constexpr int kTextLeft = 6;
 constexpr int kTextTop = 20;
@@ -78,6 +77,10 @@ Button nextButton{kNextButton};
 Button selectButton{kSelectButton};
 
 std::string document;
+std::string activeName = "Draft-001.txt";
+std::vector<std::string> fileList;
+size_t fileIndex = 0;
+bool fileMenu = false;
 size_t cursor = 0;
 bool storageReady = false;
 bool dirty = false;
@@ -216,7 +219,28 @@ void renderPairing(const bool forceFull = false) {
   lastPairingRenderAt = lastRenderAt;
 }
 
+void renderFilePicker() {
+  prepareDisplayFrame();
+  display.setCursor(6, 9);
+  display.print("FILES  ENTER:OPEN  ESC:BACK");
+  display.drawLine(0, 14, display.width() - 1, 14, BLACK);
+  const size_t first = fileIndex >= 6 ? fileIndex - 6 : 0;
+  for (size_t row = 0; row < 8 && first + row < fileList.size(); ++row) {
+    const size_t i = first + row;
+    display.setCursor(6, 25 + static_cast<int>(row) * 11);
+    display.print(i == fileIndex ? "> " : "  ");
+    display.print(cropped(fileList[i], 34).c_str());
+  }
+  display.drawLine(0, 110, display.width() - 1, 110, BLACK);
+  display.setCursor(6, 119);
+  display.print("Ctrl+N: NEW   Ctrl+O: TOGGLE");
+  display.update();
+  renderPending = false;
+  lastRenderAt = millis();
+}
+
 void renderWriter(const bool forceFull = false) {
+  if (fileMenu) { renderFilePicker(); return; }
   const std::vector<VisualLine> lines = buildVisualLines();
   const size_t activeLine = cursorVisualLine(lines);
   const size_t firstLine = activeLine >= static_cast<size_t>(kVisibleRows - 1)
@@ -227,7 +251,7 @@ void renderWriter(const bool forceFull = false) {
   prepareDisplayFrame();
 
     display.setCursor(6, 9);
-    display.print("DRAFT");
+    display.print(cropped(activeName, 18).c_str());
     display.setCursor(76, 9);
     display.print(keyboard.isConnected() ? "BT:OK" : "BT:--");
     display.setCursor(146, 9);
@@ -267,47 +291,56 @@ void renderWriter(const bool forceFull = false) {
 }
 
 bool loadDraft() {
-  if (!LittleFS.begin(true)) {
+  // Never auto-format on a mount failure: that could erase the user's drafts.
+  if (!LittleFS.begin(false)) {
     Serial.println("LittleFS mount failed; writer will be RAM-only");
     return false;
   }
-
-  if (!LittleFS.exists(kDraftPath)) return true;
-
-  File file = LittleFS.open(kDraftPath, FILE_READ);
-  if (!file) return false;
-
-  document.clear();
-  document.reserve(std::min(static_cast<size_t>(file.size()), kMaxDraftBytes));
-  while (file.available() && document.size() < kMaxDraftBytes) {
-    document.push_back(static_cast<char>(file.read()));
+  if (!LittleFS.exists("/drafts")) LittleFS.mkdir("/drafts");
+  fileList = writerfiles::list();
+  if (fileList.empty()) {
+    // Migrate non-destructively. Keep /draft.txt as a recovery copy.
+    std::string legacy;
+    if (LittleFS.exists("/draft.txt")) {
+      File old = LittleFS.open("/draft.txt", "r");
+      if (old && !old.isDirectory() && old.size() <= kMaxDraftBytes) {
+        while (old.available()) legacy.push_back(static_cast<char>(old.read()));
+      }
+      old.close();
+    }
+    if (!writerfiles::save(activeName, legacy)) return false;
+    fileList = writerfiles::list();
   }
-  file.close();
-  cursor = document.size();
-  return true;
+  if (fileList.empty()) return false;
+  activeName = fileList.front();
+  return writerfiles::read(activeName, document);
 }
 
 bool saveDraft() {
   if (!storageReady) return false;
-
-  LittleFS.remove(kDraftTempPath);
-  File file = LittleFS.open(kDraftTempPath, FILE_WRITE);
-  if (!file) return false;
-
-  const size_t written = file.write(reinterpret_cast<const uint8_t*>(document.data()), document.size());
-  file.flush();
-  file.close();
-
-  if (written != document.size()) {
-    LittleFS.remove(kDraftTempPath);
-    return false;
-  }
-
-  LittleFS.remove(kDraftPath);
-  if (!LittleFS.rename(kDraftTempPath, kDraftPath)) return false;
-
+  if (!writerfiles::save(activeName, document)) return false;
   dirty = false;
   return true;
+}
+
+bool switchDraft(const std::string& name) {
+  if (dirty && !saveDraft()) return false; // Never switch away from unsaved work.
+  std::string next;
+  if (!writerfiles::read(name, next)) return false;
+  activeName = name;
+  document.swap(next);
+  cursor = document.size();
+  fileMenu = false;
+  renderPending = true;
+  lastKeyAt = millis();
+  return true;
+}
+
+bool createDraft() {
+  if (!storageReady || (dirty && !saveDraft())) return false;
+  const std::string name = writerfiles::nextName();
+  if (name.empty() || !writerfiles::save(name, "")) return false;
+  return switchDraft(name);
 }
 
 void markEdited() {
@@ -378,36 +411,62 @@ void moveCursorVertical(const int direction) {
 void handleKeyboardEvents() {
   BleWriterKeyboard::KeyEvent event;
   while (keyboard.popEvent(event)) {
+    if (event.type == BleWriterKeyboard::KeyType::OpenFiles) {
+      if (!fileMenu && dirty && !saveDraft()) {
+        Serial.println("Cannot open file picker: autosave failed");
+        continue;
+      }
+      fileMenu = !fileMenu;
+      fileList = writerfiles::list();
+      const auto found = std::find(fileList.begin(), fileList.end(), activeName);
+      fileIndex = found != fileList.end() ? static_cast<size_t>(found - fileList.begin()) : 0;
+      renderPending = true;
+      lastKeyAt = millis();
+      continue;
+    }
+    if (event.type == BleWriterKeyboard::KeyType::NewFile) {
+      if (!createDraft()) Serial.println("Cannot create draft; check storage");
+      renderPending = true;
+      continue;
+    }
+    if (event.type == BleWriterKeyboard::KeyType::SaveFile) {
+      if (!saveDraft()) Serial.println("Save failed; original remains available");
+      renderPending = true;
+      continue;
+    }
+    if (fileMenu) {
+      switch (event.type) {
+        case BleWriterKeyboard::KeyType::Up:
+          if (fileIndex > 0) --fileIndex;
+          break;
+        case BleWriterKeyboard::KeyType::Down:
+          if (fileIndex + 1 < fileList.size()) ++fileIndex;
+          break;
+        case BleWriterKeyboard::KeyType::Enter:
+          if (fileIndex < fileList.size() && !switchDraft(fileList[fileIndex]))
+            Serial.println("Open failed; current draft preserved");
+          break;
+        case BleWriterKeyboard::KeyType::Escape:
+          fileMenu = false;
+          break;
+        default:
+          break;
+      }
+      renderPending = true;
+      lastKeyAt = millis();
+      continue;
+    }
     switch (event.type) {
-      case BleWriterKeyboard::KeyType::Character:
-        insertCharacter(event.character);
-        break;
-      case BleWriterKeyboard::KeyType::Enter:
-        insertCharacter('\n');
-        break;
-      case BleWriterKeyboard::KeyType::Backspace:
-        backspace();
-        break;
-      case BleWriterKeyboard::KeyType::DeleteKey:
-        deleteForward();
-        break;
-      case BleWriterKeyboard::KeyType::Tab:
-        insertText("    ");
-        break;
-      case BleWriterKeyboard::KeyType::Left:
-        moveCursorLeft();
-        break;
-      case BleWriterKeyboard::KeyType::Right:
-        moveCursorRight();
-        break;
-      case BleWriterKeyboard::KeyType::Up:
-        moveCursorVertical(-1);
-        break;
-      case BleWriterKeyboard::KeyType::Down:
-        moveCursorVertical(1);
-        break;
-      case BleWriterKeyboard::KeyType::Escape:
-        break;
+      case BleWriterKeyboard::KeyType::Character: insertCharacter(event.character); break;
+      case BleWriterKeyboard::KeyType::Enter: insertCharacter('\n'); break;
+      case BleWriterKeyboard::KeyType::Backspace: backspace(); break;
+      case BleWriterKeyboard::KeyType::DeleteKey: deleteForward(); break;
+      case BleWriterKeyboard::KeyType::Tab: insertText("    "); break;
+      case BleWriterKeyboard::KeyType::Left: moveCursorLeft(); break;
+      case BleWriterKeyboard::KeyType::Right: moveCursorRight(); break;
+      case BleWriterKeyboard::KeyType::Up: moveCursorVertical(-1); break;
+      case BleWriterKeyboard::KeyType::Down: moveCursorVertical(1); break;
+      default: break;
     }
   }
 }
