@@ -139,6 +139,8 @@ class USB:
             raise RuntimeError("E213 refused PUT")
         for offset in range(0, len(data), 192):
             self.send("DATA", base64.b64encode(data[offset:offset+192]).decode("ascii"))
+            if self.next() != ["ACK"]:
+                raise RuntimeError("E213 did not acknowledge data chunk")
         self.send("END")
         if self.next(timeout=60) != ["SAVED"]:
             raise RuntimeError("E213 did not confirm saved data")
@@ -301,7 +303,8 @@ def main(argv=None):
                 parser.error("Copies differ. Repeat with --prefer plot or --prefer device")
             # Baseline reflects the chosen authoritative copy. A follow-up sync
             # will change only the opposite side, never both without permission.
-            initial = desktop_hash if args.prefer == "plot" else device_hash
+            # Baseline is the non-authoritative side, so sync updates that side.
+            initial = device_hash if args.prefer == "plot" else desktop_hash
             manifest["scenes"][name] = {
                 "scene_id": scene["id"], "chapter_id": scene["chapter_id"],
                 "revision": initial
