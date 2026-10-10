@@ -8,6 +8,7 @@
 
 #include "BleWriterKeyboard.h"
 #include "WriterFiles.h"
+#include "WriterSyncSerial.h"
 
 // E213 writer bring-up:
 // - no microSD required
@@ -36,6 +37,7 @@ constexpr unsigned long kPairingRefreshMs = 1000;
 EInkDisplay_VisionMasterE213V1_1 display;
 
 BleWriterKeyboard keyboard;
+WriterSyncSerial serialSync;
 
 enum class ButtonEvent { None, Short, Long };
 
@@ -525,6 +527,21 @@ void setup() {
 }
 
 void loop() {
+  // USB transfers never overwrite unsaved keystrokes. Failure leaves the draft intact.
+  if (Serial.available() && dirty && storageReady && !saveDraft()) {
+    Serial.println("USB sync blocked: unsaved draft");
+  } else if (storageReady) {
+    serialSync.poll();
+    const std::string updated = serialSync.takeUpdatedName();
+    if (updated == activeName && !dirty) {
+      std::string replacement;
+      if (writerfiles::read(activeName, replacement)) {
+        document.swap(replacement);
+        cursor = std::min(cursor, document.size());
+        renderPending = true;
+      }
+    }
+  }
   keyboard.update();
   handlePairingButtons();
 
