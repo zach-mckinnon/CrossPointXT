@@ -3,12 +3,16 @@ name: Heltec E213 bring-up
 on:
   push:
     branches:
+      - dev
       - port/heltec-e213-v1_1
     paths:
       - platformio.ini
       - src/targets/heltec_e213/**
       - src/targets/heltec_e213_writer/**
       - test/heltec_e213/**
+      - test/e213_sync/**
+      - tools/e213-sync/**
+      - docs/e213-micro-writer.md
       - .github/workflows/e213-build.yml
   workflow_dispatch:
 
@@ -16,6 +20,16 @@ permissions:
   contents: read
 
 jobs:
+
+  desktop-sync-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Test E213/Plot and Jot sync safety rules
+        run: python -m unittest discover -s test/e213_sync -p 'test_*.py'
   pager-tests:
     runs-on: ubuntu-latest
     steps:
