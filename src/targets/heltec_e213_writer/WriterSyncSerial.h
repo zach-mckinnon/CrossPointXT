@@ -7,6 +7,7 @@
 class WriterSyncSerial {
  public:
   void poll();
+  bool busy() const { return receiving_; }
   std::string takeUpdatedName();
  private:
   std::string incoming_;
