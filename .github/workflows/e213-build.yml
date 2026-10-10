@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - dev
-      - port/heltec-e213-v1_1
     paths:
       - platformio.ini
       - src/targets/heltec_e213/**
