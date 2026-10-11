@@ -2,7 +2,7 @@
 
 > **Personal development branch:** [dev](https://github.com/zach-mckinnon/CrossPointXT/tree/dev).
 > This fork is being customized for the Heltec Vision Master E213 V1.1, Bluetooth
-> keyboard, distraction-free multi-draft writing, and local Plot & Jot sync.
+> keyboard, distraction-free multi-draft writing, and local Plot & Jot sync to a removable microSD card over USB.
 > It is **not intended for upstream submission**. The default master branch
 > retains the original Xteink-targeted code; development is on dev.
 >
