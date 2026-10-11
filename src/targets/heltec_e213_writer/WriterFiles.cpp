@@ -258,3 +258,6 @@ bool importLegacyFlashDrafts() {
   migrationBlocked = !ok;
   return ok;
 }
+
+
+} // namespace writerfiles
