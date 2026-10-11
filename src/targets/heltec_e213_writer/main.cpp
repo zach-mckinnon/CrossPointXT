@@ -8,6 +8,7 @@
 #include "BleWriterKeyboard.h"
 #include "WriterFiles.h"
 #include "WriterSyncSerial.h"
+#include "WordWrap.h"
 
 // E213 writer bring-up:
 // - external SPI microSD required for all working documents and sync metadata
@@ -68,11 +69,7 @@ struct Button {
   }
 };
 
-struct VisualLine {
-  size_t start = 0;
-  size_t end = 0;
-  std::string text;
-};
+using writerlayout::VisualLine;
 
 Button nextButton{kNextButton};
 Button selectButton{kSelectButton};
@@ -103,73 +100,19 @@ void prepareDisplayFrame() {
   display.clearMemory();
   display.setTextColor(BLACK);
   display.setTextSize(1);
+  display.setTextWrap(false); // We wrap whole words ourselves, not by Adafruit GFX.
 }
 
 std::vector<VisualLine> buildVisualLines() {
-  std::vector<VisualLine> lines;
-
-  if (document.empty()) {
-    lines.push_back({0, 0, ""});
-    return lines;
-  }
-
-  size_t offset = 0;
-  while (offset <= document.size()) {
-    const size_t lineStart = offset;
-    size_t count = 0;
-    std::string text;
-
-    while (offset < document.size() && document[offset] != '\n' && count < kCharactersPerLine) {
-      char c = document[offset];
-      if (c == '\r') {
-        ++offset;
-        continue;
-      }
-      text.push_back(c);
-      ++offset;
-      ++count;
-    }
-
-    lines.push_back({lineStart, offset, text});
-
-    if (offset >= document.size()) break;
-
-    if (document[offset] == '\n') {
-      ++offset;
-      if (offset == document.size()) {
-        lines.push_back({offset, offset, ""});
-        break;
-      }
-      continue;
-    }
-
-    // If the line filled up, keep offset unchanged so the next visual row
-    // starts at exactly the next character.
-  }
-
-  if (lines.empty()) lines.push_back({0, 0, ""});
-  return lines;
+  return writerlayout::wrapWords(document, kCharactersPerLine);
 }
 
 size_t cursorVisualLine(const std::vector<VisualLine>& lines) {
-  for (size_t i = 0; i < lines.size(); ++i) {
-    const bool finalLine = i + 1 == lines.size();
-    if (cursor >= lines[i].start && (cursor < lines[i].end || (cursor == lines[i].end && finalLine))) {
-      return i;
-    }
-
-    // Cursor can sit on a newline byte; visually that belongs at the end of
-    // the line immediately before the newline.
-    if (cursor == lines[i].end && cursor < document.size() && document[cursor] == '\n') {
-      return i;
-    }
-  }
-  return lines.size() - 1;
+  return writerlayout::lineForCursor(lines, cursor);
 }
 
 int cursorColumn(const VisualLine& line) {
-  if (cursor <= line.start) return 0;
-  return static_cast<int>(std::min(cursor - line.start, static_cast<size_t>(kCharactersPerLine)));
+  return static_cast<int>(writerlayout::columnForCursor(line, cursor));
 }
 
 void renderPairing(const bool forceFull = false) {
@@ -425,7 +368,7 @@ void moveCursorVertical(const int direction) {
 
   const int column = cursorColumn(lines[current]);
   const VisualLine& destination = lines[static_cast<size_t>(target)];
-  cursor = destination.start + std::min(static_cast<size_t>(column), destination.end - destination.start);
+  cursor = destination.start + std::min(static_cast<size_t>(column), destination.text.size());
   renderPending = true;
   lastKeyAt = millis();
 }
