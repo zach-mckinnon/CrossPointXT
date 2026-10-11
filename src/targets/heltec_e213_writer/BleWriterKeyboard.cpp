@@ -97,9 +97,22 @@ void BleWriterKeyboard::update() {
   if (connected) { processDeleteRepeat(); return; }
   if (connecting) return;
 
-  if (knownAdvertisementSeen.exchange(false) && !knownAdvertisementLogged) {
-    knownAdvertisementLogged = true;
-    Serial.println("[E213 BLE] Saved keyboard IS advertising; its HID/name fields may be absent.");
+  const bool knownSeen = knownAdvertisementSeen.exchange(false);
+  if (knownSeen) {
+    if (!knownAdvertisementLogged) {
+      knownAdvertisementLogged = true;
+      Serial.println("[E213 BLE] Saved keyboard IS advertising; its HID/name fields may be absent.");
+    }
+    // Some keyboards advertise for only a short reconnect window. Capture
+    // that opportunity, but throttle early retries after failures.
+    if (reconnect.knownAdvertisementDue(millis())) {
+      Serial.println("[E213 BLE] Saved keyboard detected: starting automatic connection.");
+      NimBLEDevice::getScan()->stop();
+      scanning = false;
+      reconnectPending = true;
+      bumpVersion();
+      return;
+    }
   }
 
   // Queue on one loop and connect on the next so the screen can show progress.
