@@ -74,34 +74,67 @@ void BleWriterKeyboard::begin() {
   scan->setActiveScan(true);
   scan->setInterval(45);
   scan->setWindow(30);
+  loadRememberedPeer();
+  reconnect.begin(rememberedPeer.valid(), millis());
+  reconnectPending = false;
+  disconnectedEvent = false;
   bumpVersion();
 }
 
-bool BleWriterKeyboard::end() {
-  const bool stopped = NimBLEDevice::deinit(true);
-  if (!stopped) return false;
-  activeKeyboard = nullptr;
-  client = nullptr;
-  connected = false;
-  connecting = false;
-  scanning = false;
-  scanRequested = false;
-  heldDeleteCode = 0;
-  clearQueue();
-  return true;
-}
-
 void BleWriterKeyboard::update() {
+  if (disconnectedEvent.exchange(false)) {
+    if (lostReadyConnection.exchange(false)) reconnect.disconnected(millis());
+    scanRequested = true;
+    clearQueue();
+  }
   if (connected) { processDeleteRepeat(); return; }
-  if (connecting || scanning) return;
+  if (connecting) return;
+
+  // Queue on one loop and connect on the next so the screen can show progress.
+  // No connect, service discovery, NVS writes or deletion runs in a BLE callback.
+  if (reconnectPending) {
+    reconnectPending = false;
+    automaticAttempt = true;
+    connectAddress(NimBLEAddress(rememberedPeer.address, rememberedPeer.type));
+    automaticAttempt = false;
+    return;
+  }
 
   const unsigned long now = millis();
+  if (reconnect.due(now)) {
+    NimBLEDevice::getScan()->stop();
+    scanning = false;
+    reconnectPending = true;
+    bumpVersion();
+    return;
+  }
+  if (scanning) return;
   if (!scanRequested && now - lastScanAt < kScanRetryMs) return;
 
   scanRequested = false;
   lastScanAt = now;
   scanning = NimBLEDevice::getScan()->start(kScanDurationMs, false, true);
   bumpVersion();
+}
+
+bool BleWriterKeyboard::end() {
+  if (!NimBLEDevice::deinit(true)) {
+    Serial.println("[E213 ERR] BLE shutdown failed");
+    return false;
+  }
+  activeKeyboard = nullptr;
+  client = nullptr;
+  connected = false;
+  connecting = false;
+  scanning = false;
+  scanRequested = false;
+  reconnectPending = false;
+  automaticAttempt = false;
+  disconnectedEvent = false;
+  lostReadyConnection = false;
+  heldDeleteCode = 0;
+  clearQueue();
+  return true;
 }
 
 bool BleWriterKeyboard::isKeyboardCandidate(const NimBLEAdvertisedDevice* device) const {
@@ -155,50 +188,55 @@ void BleWriterKeyboard::handleScanEnd() {
 }
 
 bool BleWriterKeyboard::connectSelectedCandidate() {
+  if (connected || connecting) return false;
+  reconnect.manualSelection();
+  reconnectPending = false;
   Candidate candidate;
   if (!getCandidate(selectedIndex, candidate)) {
     requestScan();
     return false;
   }
 
+  return connectAddress(NimBLEAddress(std::string(candidate.address), candidate.addressType));
+}
+
+bool BleWriterKeyboard::connectAddress(const NimBLEAddress& address) {
   NimBLEDevice::getScan()->stop();
   scanning = false;
   connecting = true;
+  disconnectedEvent = false;
   bumpVersion();
 
-  client = NimBLEDevice::createClient();
+  // Keep one SDK-owned client for this keyboard manager's lifetime. Dropping
+  // the pointer on disconnect leaked clients until the NimBLE limit was hit.
+  // Service discovery needs SDK allocations; reuse the client and let connect
+  // discard the old attribute cache instead of creating an unbounded pool.
+  if (!client) client = NimBLEDevice::createClient();
   if (!client) {
-    connecting = false;
-    requestScan();
-    return false;
+    return connectionFailed("client allocation failed");
   }
 
   client->setClientCallbacks(&clientCallbacks, false);
+  client->setSelfDelete(false, false);
   client->setConnectTimeout(kConnectTimeoutMs);
   client->setConnectRetries(0);
   client->setConnectionParams(24, 48, 0, 60);
 
-  const NimBLEAddress address(std::string(candidate.address), candidate.addressType);
+  Serial.printf("[E213 INF] %s keyboard %s (type=%u)\n", automaticAttempt ? "Reconnecting to" : "Connecting to",
+          address.toString().c_str(), address.getType());
   if (!client->connect(address)) {
-    NimBLEDevice::deleteClient(client);
-    client = nullptr;
-    connecting = false;
-    requestScan();
-    return false;
+    return connectionFailed("connection failed or timed out");
   }
 
   auto* hidService = client->getService(NimBLEUUID(kHidServiceUuid));
   if (!hidService) {
-    client->disconnect();
-    NimBLEDevice::deleteClient(client);
-    client = nullptr;
-    connecting = false;
-    requestScan();
-    return false;
+    return connectionFailed("HID service unavailable");
   }
 
   // Use the same security approach as CrossPointXT's existing BLE editor.
-  client->secureConnection(false);
+  if (!client->secureConnection(false)) {
+    Serial.println("[E213 INF] Keyboard security failed; checking whether HID reports remain accessible");
+  }
 
   if (auto* protocol = hidService->getCharacteristic(NimBLEUUID(kProtocolModeUuid))) {
     protocol->writeValue(&kBootProtocol, 1, true);
@@ -219,31 +257,80 @@ bool BleWriterKeyboard::connectSelectedCandidate() {
     }
   }
 
-  if (subscribed == 0) {
-    client->disconnect();
-    NimBLEDevice::deleteClient(client);
-    client = nullptr;
-    connecting = false;
-    requestScan();
-    return false;
+  if (subscribed == 0 || !client->isConnected() || disconnectedEvent) {
+    return connectionFailed("no usable HID subscription or peer disconnected");
   }
 
-  connecting = false;
-  connected = true;
   clearQueue();
   memset(previousKeys, 0, sizeof(previousKeys));
+  rememberConnectedPeer();
+  if (rememberedPeer.valid()) reconnect.connected(millis());
+  else reconnect.manualSelection();
+  // Serialize publication with the disconnect callback so a lost connection
+  // cannot be overwritten by the end of the synchronous setup sequence.
+  taskENTER_CRITICAL(&stateMux);
+  connected = !disconnectedEvent.load();
+  taskEXIT_CRITICAL(&stateMux);
+  connecting = false;
+  if (!connected) return connectionFailed("peer disconnected during setup");
+  Serial.printf("[E213 INF] Keyboard ready: %d report subscriptions, bonded=%d\n", subscribed, client->getConnInfo().isBonded());
   bumpVersion();
   return true;
 }
 
-void BleWriterKeyboard::handleDisconnect(NimBLEClient* disconnectedClient, int reason) {
-  Serial.printf("BLE keyboard disconnected (reason=%d)\n", reason);
-  if (disconnectedClient == client) client = nullptr;
-  connected = false;
+bool BleWriterKeyboard::connectionFailed(const char* reason) {
+  Serial.printf("[E213 ERR] Keyboard connection: %s\n", reason);
+  if (client && client->isConnected()) client->disconnect();
   connecting = false;
+  connected = false;
   scanRequested = true;
-  heldDeleteCode = 0;
+  reconnect.failed(millis());
+  bumpVersion();
+  return false;
+}
+
+void BleWriterKeyboard::loadRememberedPeer() {
+  if (HeltecKeyboardIdentityStore::load(rememberedPeer)) {
+    Serial.println("[E213 INF] Loaded last keyboard identity");
+    return;
+  }
+  // Older writer builds stored NimBLE bonds but not the last peer. A single
+  // bond is unambiguous; with multiple bonds require one manual selection.
+  if (NimBLEDevice::getNumBonds() == 1) {
+    const auto address = NimBLEDevice::getBondedAddress(0);
+    rememberedPeer.version = 1;
+    rememberedPeer.type = address.getType();
+    memcpy(rememberedPeer.address, address.getVal(), sizeof(rememberedPeer.address));
+    Serial.println("[E213 INF] Using the only existing keyboard bond for initial reconnect");
+  }
+}
+
+void BleWriterKeyboard::rememberConnectedPeer() {
+  const auto info = client->getConnInfo();
+  // Persist the identity rather than a rotating over-the-air privacy address.
+  const auto address = info.isBonded() ? info.getIdAddress() : client->getPeerAddress();
+  if (address.isNull() || address.isRpa() || address.isNrpa()) {
+    rememberedPeer = {};
+    Serial.println("[E213 ERR] Keyboard has no stable identity; manual pairing will be needed after restart");
+    return;
+  }
+  rememberedPeer.version = 1;
+  rememberedPeer.type = address.getType();
+  memcpy(rememberedPeer.address, address.getVal(), sizeof(rememberedPeer.address));
+  if (!HeltecKeyboardIdentityStore::save(rememberedPeer)) {
+    Serial.println("[E213 ERR] Last keyboard is remembered for this session only");
+  }
+}
+
+void BleWriterKeyboard::handleDisconnect(NimBLEClient* disconnectedClient, int reason) {
+  if (disconnectedClient != client) return;
+  Serial.printf("[E213 INF] BLE keyboard disconnected (reason=%d)\n", reason);
+  taskENTER_CRITICAL(&stateMux);
+  if (connected.exchange(false)) lostReadyConnection = true;
+  disconnectedEvent = true;
+  taskEXIT_CRITICAL(&stateMux);
   memset(previousKeys, 0, sizeof(previousKeys));
+  heldDeleteCode = 0;
   bumpVersion();
 }
 
@@ -440,6 +527,8 @@ bool BleWriterKeyboard::getCandidate(const int index, Candidate& out) const {
 }
 
 void BleWriterKeyboard::selectNextCandidate() {
+  reconnect.manualSelection();
+  reconnectPending = false;
   taskENTER_CRITICAL(&stateMux);
   if (candidateTotal > 0) selectedIndex = (selectedIndex + 1) % candidateTotal;
   taskEXIT_CRITICAL(&stateMux);
@@ -448,6 +537,8 @@ void BleWriterKeyboard::selectNextCandidate() {
 
 void BleWriterKeyboard::requestScan() {
   if (connected || connecting) return;
+  reconnect.manualSelection();
+  reconnectPending = false;
   clearCandidates();
   scanRequested = true;
   bumpVersion();
@@ -455,10 +546,12 @@ void BleWriterKeyboard::requestScan() {
 
 const char* BleWriterKeyboard::statusText() const {
   if (connected) return "Keyboard connected";
+  if (isAutoReconnecting()) return "Reconnecting to keyboard...";
   if (connecting) return "Connecting...";
+  if (reconnect.enabled()) return "Waiting to reconnect...";
   if (scanning) return candidateTotal > 0 ? "Scanning - keyboard found" : "Scanning for BLE keyboard";
   if (candidateTotal > 0) return "Choose keyboard";
   return "Put keyboard in pairing mode";
 }
 
-void BleWriterKeyboard::bumpVersion() { version = version + 1; }
+void BleWriterKeyboard::bumpVersion() { ++version; }
