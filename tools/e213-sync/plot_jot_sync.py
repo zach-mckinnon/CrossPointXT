@@ -201,7 +201,36 @@ def save_conflict(db, filename: str, device: bytes):
     return path
 
 
-def synchronize(usb: USB, db, project_id: int, manifest: dict, manifest_hash: str):
+def backup_device(usb: USB, destination: Path) -> Path:
+    """Create a SHA-256 verified, read-only copy of all exposed SD drafts."""
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    folder = destination / f"e213-sd-backup-{stamp}"
+    folder.mkdir(parents=True, exist_ok=False)
+    for name, revision in usb.files().items():
+        if not NAME.fullmatch(name) or not HASH.fullmatch(revision):
+            raise RuntimeError(f"Unsafe filename or revision: {name!r}")
+        data, fetched_revision = usb.get(name)
+        if fetched_revision != revision:
+            raise RuntimeError(f"{name} changed during backup; retry with writing stopped")
+        copy = folder / name
+        copy.write_bytes(data)
+        if checksum(copy.read_bytes()) != revision:
+            raise RuntimeError(f"Local backup verification failed for {name}")
+    try:
+        data, revision = usb.get(".sync")
+    except RuntimeError as err:
+        if "not-found" not in str(err):
+            raise
+    else:
+        copy = folder / ".sync"
+        copy.write_bytes(data)
+        if checksum(copy.read_bytes()) != revision:
+            raise RuntimeError("Local .sync backup verification failed")
+    return folder
+
+
+def synchronize(usb: USB, db, project_id: int, manifest: dict, manifest_hash: str,
+                dry_run: bool = False):
     changed = False
     backed_up = False
     summary = {"push": 0, "pull": 0, "same": 0, "conflict": 0, "missing": 0}
@@ -223,27 +252,30 @@ def synchronize(usb: USB, db, project_id: int, manifest: dict, manifest_hash: st
             current = db_scene(db, project_id, item["scene_id"], item["chapter_id"])
             if checksum((current["content"] or "").encode("utf-8")) != desktop_rev:
                 action = "conflict"
-            else:
+            elif not dry_run:
                 if not backed_up:
                     print("Plot & Jot backup:", backup_db(db))
                     backed_up = True
                 db.update_scene_content(item["scene_id"], device_bytes.decode("utf-8"))
                 item["revision"] = device_rev
                 changed = True
-        elif action == "pull":
+        elif action == "pull" and not dry_run:
             usb.put(filename, desktop_bytes, device_rev)
             item["revision"] = desktop_rev
             changed = True
-        elif action == "same" and item["revision"] != device_rev:
+        elif action == "same" and item["revision"] != device_rev and not dry_run:
             item["revision"] = device_rev
             changed = True
         if action == "conflict":
-            path = save_conflict(db, filename, device_bytes)
-            print(f"CONFLICT {filename}: E213 copy preserved at {path}; Plot & Jot unchanged")
+            if dry_run:
+                print(f"WOULD CONFLICT {filename}: neither copy would be overwritten")
+            else:
+                path = save_conflict(db, filename, device_bytes)
+                print(f"CONFLICT {filename}: E213 copy preserved at {path}; Plot & Jot unchanged")
         else:
-            print(f"{action.upper():8} {filename}")
+            print(f"{'WOULD ' if dry_run else ''}{action.upper():8} {filename}")
         summary[action] += 1
-    if changed:
+    if changed and not dry_run:
         put_manifest(usb, manifest, manifest_hash)
     return summary
 
@@ -251,7 +283,7 @@ def synchronize(usb: USB, db, project_id: int, manifest: dict, manifest_hash: st
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", help="USB serial port, e.g. COM10")
-    parser.add_argument("--plot-source", type=Path, required=True,
+    parser.add_argument("--plot-source", type=Path,
                         help="Path to local plot-and-jot-source checkout")
     parser.add_argument("--db", type=Path, help="Override Plot & Jot database path")
     parser.add_argument("--project", type=int, help="Existing Plot & Jot project ID")
@@ -263,8 +295,25 @@ def main(argv=None):
     parser.add_argument("--prefer", choices=("plot", "device"),
                         help="Which copy wins when first binding differing documents")
     parser.add_argument("--sync", action="store_true", help="Synchronize existing scene links")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Preview --sync without changing device, desktop or manifest")
+    parser.add_argument("--backup-device", type=Path,
+                        help="Save read-only SHA-256 verified snapshot of SD drafts and manifest")
     args = parser.parse_args(argv)
 
+    if args.dry_run and (not args.sync or args.bind or args.backup_device):
+        parser.error("--dry-run is supported only with --sync")
+    if args.backup_device:
+        if not args.port:
+            parser.error("--port required to back up the device")
+        usb = USB(args.port)
+        try:
+            print("Read-only SD backup:", backup_device(usb, args.backup_device))
+        finally:
+            usb.close()
+        return
+    if not args.plot_source:
+        parser.error("--plot-source is required for Plot & Jot operations")
     sys.path.insert(0, str(args.plot_source.resolve()))
     from src.writer.database.database import DatabaseManager
     db = DatabaseManager(args.db)
@@ -313,7 +362,7 @@ def main(argv=None):
             manifest, old_hash = get_manifest(usb, args.project, db.get_project(args.project)["name"])
             print(f"LINKED {name} -> scene {scene['id']}")
         if args.sync or args.bind:
-            print(synchronize(usb, db, args.project, manifest, old_hash))
+            print(synchronize(usb, db, args.project, manifest, old_hash, dry_run=args.dry_run))
         else:
             parser.error("Choose --sync, --bind, --list-files or a listing option")
     finally:
