@@ -1,5 +1,6 @@
 #include "HeltecKeyboardIdentity.h"
 
+#include <Arduino.h>
 #include <Preferences.h>
 
 
