@@ -18,6 +18,7 @@ class BleWriterKeyboard {
     OpenFiles,
     NewFile,
     SaveFile,
+    Sleep,
     Undo,
     Redo,
     FocusMode,
@@ -44,6 +45,7 @@ class BleWriterKeyboard {
   };
 
   void begin();
+  bool end();
   void update();
   bool isConnected() const { return connected; }
   bool isScanning() const { return scanning; }
