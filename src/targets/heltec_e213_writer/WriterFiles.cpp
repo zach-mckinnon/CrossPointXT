@@ -17,7 +17,8 @@ constexpr int kSdCS = 38;
 constexpr int kSdMOSI = 39;
 constexpr int kSdSCK = 40;
 constexpr int kSdMISO = 41;
-constexpr uint32_t kSdClockHz = 4000000;
+// Use the 1 MHz clock verified on the assembled v1_1 hardware.
+constexpr uint32_t kSdClockHz = 1000000;
 constexpr char kDraftDir[] = "/drafts";
 constexpr char kImportMarker[] = "/.flash-imported";
 
