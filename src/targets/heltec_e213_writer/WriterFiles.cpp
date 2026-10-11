@@ -22,6 +22,7 @@ constexpr char kImportMarker[] = "/.flash-imported";
 
 SPIClass sdSpi(FSPI);
 bool mounted = false;
+bool migrationBlocked = false; // Block USB on an incomplete legacy import.
 
 std::string pathFor(const std::string& name) { return std::string(kDraftDir) + "/" + name; }
 
@@ -130,7 +131,7 @@ bool begin() {
   return true;
 }
 
-bool ready() { return mounted; }
+bool ready() { return mounted && !migrationBlocked; }
 
 bool validName(const std::string& name) {
   if (name.size() < 5 || name.size() > 48 ||
@@ -254,5 +255,6 @@ bool importLegacyFlashDrafts() {
   // A completed import marker prevents rereading stale flash on each reboot.
   // Failure is non-destructive: the original flash remains available for recovery.
   if (ok && !atomicWrite(kImportMarker, "imported\n")) ok = false;
+  migrationBlocked = !ok;
   return ok;
 }
