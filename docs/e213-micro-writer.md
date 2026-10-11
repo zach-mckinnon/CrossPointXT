@@ -215,3 +215,31 @@ Controlled power-loss tests belong after the basic recovery path is proven.
 - USB transfer is designed for one authorized local laptop, not multiple
   concurrent writers. Do not type during a USB sync; the UI indicates the pause.
 - Direct card-reader Plot & Jot sync and per-novel folders are not implemented.
+
+
+## E213 editing screen status layout
+
+The current minimum built-in bitmap text uses Adafruit GFX setTextSize(1),
+**6 px wide × 8 px high per character**, with a 9 px baseline step.
+Word wrapping presently uses 39 character/byte columns and nine visible rows.
+This is the **smallest text size we intend to offer**. More comfortable 12 px
+and 16 px glyph-height font options and font-family selection are planned,
+not part of this firmware yet.
+
+Editing-screen status positions (250 × 122 e-ink screen):
+- Header LEFT: currently opened document's name, automatically cropped so
+  it does not overlap status.
+- Header RIGHT: SAVED, UNSAVED, SAVE ERR, or USB SYNC.
+- Footer CENTER: BT:OK for connected, BT:-- for disconnected.
+- Footer RIGHT: live N words counter, derived from manuscript content.
+- Middle: nine rows of actual manuscript text at the current minimum size.
+
+A failed SD save remains a visible SAVE ERR until a later successful save.
+UNSAVED means edited content remains in memory while autosave is pending.
+Word counting treats whitespace-separated groups containing at least one
+letter, digit, or non-ASCII byte as words; this is not yet full Unicode-aware
+linguistic segmentation.
+
+Next typography step: genuinely legible font faces sized ~8/12/16 px with
+pixel-accurate wrapping and correct cursor mapping, then SD-persisted display
+preferences. Any font/size setting must NEVER alter saved manuscript bytes.
