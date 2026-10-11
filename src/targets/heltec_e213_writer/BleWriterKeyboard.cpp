@@ -1,5 +1,6 @@
 #include "BleWriterKeyboard.h"
 #include "WriterKeyRepeat.h"
+#include "KnownKeyboardAdvertisement.h"
 
 #include <algorithm>
 #include <cctype>
@@ -78,6 +79,12 @@ void BleWriterKeyboard::begin() {
   reconnect.begin(rememberedPeer.valid(), millis());
   reconnectPending = false;
   disconnectedEvent = false;
+  knownAdvertisementSeen = false;
+  knownAdvertisementLogged = false;
+  autoAttemptCount = 0;
+  Serial.printf("[E213 BLE] Starting keyboard manager; NVS remembered=%s, bonded peers=%d\n",
+                rememberedPeer.valid() ? "yes" : "no",
+                static_cast<int>(NimBLEDevice::getNumBonds()));
   bumpVersion();
 }
 
@@ -90,11 +97,19 @@ void BleWriterKeyboard::update() {
   if (connected) { processDeleteRepeat(); return; }
   if (connecting) return;
 
+  if (knownAdvertisementSeen.exchange(false) && !knownAdvertisementLogged) {
+    knownAdvertisementLogged = true;
+    Serial.println("[E213 BLE] Saved keyboard IS advertising; its HID/name fields may be absent.");
+  }
+
   // Queue on one loop and connect on the next so the screen can show progress.
   // No connect, service discovery, NVS writes or deletion runs in a BLE callback.
   if (reconnectPending) {
     reconnectPending = false;
     automaticAttempt = true;
+    ++autoAttemptCount;
+    Serial.printf("[E213 BLE] Auto-connect attempt %lu to saved keyboard\n",
+                  static_cast<unsigned long>(autoAttemptCount));
     connectAddress(NimBLEAddress(rememberedPeer.address, rememberedPeer.type));
     automaticAttempt = false;
     return;
@@ -150,11 +165,18 @@ bool BleWriterKeyboard::isKeyboardCandidate(const NimBLEAdvertisedDevice* device
 }
 
 void BleWriterKeyboard::handleAdvertisement(const NimBLEAdvertisedDevice* device) {
-  if (!isKeyboardCandidate(device)) return;
+  if (!device) return;
+  const NimBLEAddress& address = device->getAddress();
+  const bool known = writerkeyboard::matchesKnownPeer(
+      rememberedPeer, address.getVal(), address.getType());
+  // Reconnect advertisements commonly omit HID UUID, appearance, or name.
+  // A precise match to our saved identity is sufficient to include that peer.
+  if (!known && !isKeyboardCandidate(device)) return;
+  if (known) knownAdvertisementSeen = true;
 
   Candidate candidate;
-  const std::string name = device->haveName() ? device->getName() : "Unnamed keyboard";
-  const NimBLEAddress& address = device->getAddress();
+  const std::string name = device->haveName() ? device->getName() :
+                           known ? "Saved keyboard (reconnect)" : "Unnamed keyboard";
   std::strncpy(candidate.name, name.c_str(), sizeof(candidate.name) - 1);
   std::strncpy(candidate.address, address.toString().c_str(), sizeof(candidate.address) - 1);
   candidate.addressType = address.getType();
@@ -285,6 +307,8 @@ bool BleWriterKeyboard::connectionFailed(const char* reason) {
   connected = false;
   scanRequested = true;
   reconnect.failed(millis());
+  Serial.printf("[E213 BLE] Reconnect will retry in %lu seconds if keyboard is available\n",
+                static_cast<unsigned long>(KeyboardReconnect::RETRY_DELAY_MS / 1000));
   bumpVersion();
   return false;
 }
@@ -303,12 +327,19 @@ void BleWriterKeyboard::loadRememberedPeer() {
     memcpy(rememberedPeer.address, address.getVal(), sizeof(rememberedPeer.address));
     Serial.println("[E213 INF] Using the only existing keyboard bond for initial reconnect");
   }
+  if (!rememberedPeer.valid()) {
+    Serial.printf("[E213 BLE] No saved stable keyboard address; found %d BLE bond(s). Pair/connect once.\n",
+                  static_cast<int>(NimBLEDevice::getNumBonds()));
+  }
 }
 
 void BleWriterKeyboard::rememberConnectedPeer() {
   const auto info = client->getConnInfo();
   // Persist the identity rather than a rotating over-the-air privacy address.
   const auto address = info.isBonded() ? info.getIdAddress() : client->getPeerAddress();
+  Serial.printf("[E213 BLE] Connection security: bonded=%d, bonds=%d, address-type=%u\n",
+                info.isBonded(), static_cast<int>(NimBLEDevice::getNumBonds()),
+                static_cast<unsigned>(address.getType()));
   if (address.isNull() || address.isRpa() || address.isNrpa()) {
     rememberedPeer = {};
     Serial.println("[E213 ERR] Keyboard has no stable identity; manual pairing will be needed after restart");
@@ -319,7 +350,10 @@ void BleWriterKeyboard::rememberConnectedPeer() {
   memcpy(rememberedPeer.address, address.getVal(), sizeof(rememberedPeer.address));
   if (!HeltecKeyboardIdentityStore::save(rememberedPeer)) {
     Serial.println("[E213 ERR] Last keyboard is remembered for this session only");
+  } else {
+    Serial.println("[E213 BLE] Saved keyboard identity verified in persistent NVS.");
   }
+  knownAdvertisementLogged = false;
 }
 
 void BleWriterKeyboard::handleDisconnect(NimBLEClient* disconnectedClient, int reason) {
