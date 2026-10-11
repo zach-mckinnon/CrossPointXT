@@ -9,6 +9,7 @@
 #include "WriterFiles.h"
 #include "WriterSyncSerial.h"
 #include "WordWrap.h"
+#include "WriterStats.h"
 
 // E213 writer bring-up:
 // - external SPI microSD required for all working documents and sync metadata
@@ -82,6 +83,7 @@ bool fileMenu = false;
 size_t cursor = 0;
 bool storageReady = false;
 bool dirty = false;
+bool saveFailed = false;
 bool renderPending = true;
 bool syncWasBusy = false;
 uint32_t lastKeyboardStatusVersion = 0;
@@ -215,13 +217,17 @@ void renderWriter(const bool forceFull = false) {
   (void)forceFull;
   prepareDisplayFrame();
 
-    display.setCursor(6, 9);
-    display.print(cropped(activeName, 18).c_str());
-    display.setCursor(76, 9);
-    display.print(keyboard.isConnected() ? "BT:OK" : "BT:--");
-    display.setCursor(146, 9);
-    display.print(document.size());
-    display.print(" bytes");
+    // Top: manuscript name left, save state right. Never let them overlap.
+    const char* status = serialSync.busy() ? "USB SYNC" :
+                         saveFailed ? "SAVE ERR" :
+                         dirty ? "UNSAVED" : "SAVED";
+    const std::string saveLabel(status);
+    const int saveX = writerstats::rightAlignedX(display.width(), saveLabel);
+    const size_t maxTitle = writerstats::titleColumns(saveX);
+    display.setCursor(kTextLeft, 9);
+    display.print(cropped(activeName, maxTitle).c_str());
+    display.setCursor(saveX, 9);
+    display.print(saveLabel.c_str());
     display.drawLine(0, 14, display.width() - 1, 14, BLACK);
 
     for (int row = 0; row < kVisibleRows; ++row) {
@@ -238,19 +244,15 @@ void renderWriter(const bool forceFull = false) {
       }
     }
 
+    // Bottom center: concise Bluetooth state. Bottom right: word count.
+    // Keep the left side free for future battery or focus-mode indicators.
     display.drawLine(0, 110, display.width() - 1, 110, BLACK);
-    display.setCursor(6, 119);
-    if (!keyboard.isConnected()) {
-      display.print("Keyboard disconnected");
-    } else if (!storageReady) {
-      display.print("NO SD CARD - writing disabled");
-    } else if (serialSync.busy()) {
-      display.print("USB SYNC - NO TYPING");
-    } else if (dirty) {
-      display.print("Editing... autosave pending");
-    } else {
-      display.print("Saved to SD card");
-    }
+    const std::string btLabel = keyboard.isConnected() ? "BT:OK" : "BT:--";
+    display.setCursor(writerstats::centeredX(display.width(), btLabel), 119);
+    display.print(btLabel.c_str());
+    const std::string wordLabel = std::to_string(writerstats::countWords(document)) + " words";
+    display.setCursor(writerstats::rightAlignedX(display.width(), wordLabel), 119);
+    display.print(wordLabel.c_str());
   display.update();
 
   lastRenderAt = millis();
@@ -283,9 +285,15 @@ bool loadDraft() {
 }
 
 bool saveDraft() {
-  if (!storageReady) return false;
-  if (!writerfiles::save(activeName, document)) return false;
+  if (!storageReady || !writerfiles::save(activeName, document)) {
+    // A failed save must be visible, not reported as merely "unsaved".
+    saveFailed = true;
+    renderPending = true;
+    return false;
+  }
   dirty = false;
+  saveFailed = false;
+  renderPending = true;
   return true;
 }
 
@@ -295,6 +303,7 @@ bool switchDraft(const std::string& name) {
   if (!writerfiles::read(name, next)) return false;
   activeName = name;
   document.swap(next);
+  saveFailed = false;
   cursor = document.size();
   if (!writerfiles::saveActiveName(name))
     Serial.println("Warning: active draft preference not saved");
@@ -507,6 +516,7 @@ void loop() {
       std::string replacement;
       if (writerfiles::read(activeName, replacement)) {
         document.swap(replacement);
+        saveFailed = false;
         cursor = std::min(cursor, document.size());
         renderPending = true;
       }
