@@ -41,6 +41,10 @@ class USB:
     def __init__(self, docs):
         self.docs = dict(docs)
 
+    def files(self):
+        return {name: bridge.checksum(data) for name, data in self.docs.items()
+                if bridge.NAME.fullmatch(name)}
+
     def get(self, name):
         if name not in self.docs:
             raise RuntimeError("E213 refused command: not-found")
@@ -111,6 +115,38 @@ class FullSyncTests(unittest.TestCase):
         summary = bridge.synchronize(USB({}), db, 42, manifest("original"), "*")
         self.assertEqual(summary["missing"], 1)
         self.assertEqual(db.get_scene(101)["content"], "desktop version")
+
+    def test_dry_run_does_not_modify_device_db_or_manifest(self):
+        db = DB(self.path, "desktop original")
+        m = manifest("desktop original")
+        usb = USB({"Draft-001.txt": b"device new"})
+        summary = bridge.synchronize(usb, db, 42, m, "*", dry_run=True)
+        self.assertEqual(summary["push"], 1)
+        self.assertEqual(db.get_scene(101)["content"], "desktop original")
+        self.assertNotIn(".sync", usb.docs)
+        self.assertEqual(m["scenes"]["Draft-001.txt"]["revision"],
+                         bridge.checksum(b"desktop original"))
+        self.assertFalse((self.path.parent / "backups").exists())
+
+    def test_read_only_backup_verifies_all_drafts_and_manifest(self):
+        usb = USB({
+            "Draft-001.txt": b"first manuscript",
+            "Draft-002.txt": b"second manuscript",
+            ".sync": b"manifest version 1"
+        })
+        backup = bridge.backup_device(usb, self.path.parent / "snapshots")
+        self.assertEqual((backup / "Draft-001.txt").read_bytes(), b"first manuscript")
+        self.assertEqual((backup / "Draft-002.txt").read_bytes(), b"second manuscript")
+        self.assertEqual((backup / ".sync").read_bytes(), b"manifest version 1")
+        self.assertEqual(len(usb.docs), 3)
+
+    def test_backup_fails_if_device_changes_while_reading(self):
+        class ChangingUSB(USB):
+            def files(self):
+                return {"Draft-001.txt": bridge.checksum(b"before")}
+        usb = ChangingUSB({"Draft-001.txt": b"after"})
+        with self.assertRaisesRegex(RuntimeError, "changed during backup"):
+            bridge.backup_device(usb, self.path.parent / "snapshots")
 
     def test_wrong_chapter_mapping_aborts_before_writes(self):
         db = DB(self.path, "old")
