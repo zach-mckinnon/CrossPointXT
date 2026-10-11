@@ -1,4 +1,5 @@
 #include "BleWriterKeyboard.h"
+#include "WriterKeyRepeat.h"
 
 #include <algorithm>
 #include <cctype>
@@ -318,7 +319,7 @@ void BleWriterKeyboard::handleReport(const uint8_t* data, size_t length) {
   if (pressedDelete != heldDeleteCode) {
     heldDeleteCode = pressedDelete;
     deleteHeldSince = millis();
-    nextDeleteAt = deleteHeldSince + 450;
+    nextDeleteAt = deleteHeldSince + writerrepeat::firstRepeatDelayMs;
   }
   memcpy(previousKeys, keys, sizeof(previousKeys));
 }
@@ -327,7 +328,7 @@ void BleWriterKeyboard::processDeleteRepeat() {
   if (!heldDeleteCode || static_cast<int32_t>(millis() - nextDeleteAt) < 0) return;
   const uint32_t elapsed = millis() - deleteHeldSince;
   pushEvent(KeyEvent{heldDeleteCode == 0x2A ? KeyType::Backspace : KeyType::DeleteKey});
-  nextDeleteAt = millis() + (elapsed > 2000 ? 40 : elapsed > 1000 ? 80 : 135);
+  nextDeleteAt = millis() + writerrepeat::interval(elapsed);
 }
 
 char BleWriterKeyboard::keyCodeToAscii(const uint8_t keyCode, const bool shifted) {
