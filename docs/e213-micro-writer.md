@@ -314,3 +314,38 @@ Still missing versus mature dedicated writerdecks: persistent sleep/wake,
 measured battery runtime, fast low-ghosting incremental e-ink refresh,
 comfortable Unicode/proportional fonts, selection/clipboard, search/replace,
 filename editing, robust power-loss tests, and validated Plot & Jot sync.
+
+
+## Automatic Bluetooth keyboard reconnect (ported from working v1_1)
+
+The BLE client stores the last successful keyboard's stable address/type in
+ESP32 NVS under e213-keyboard/last-peer, using the same versioned identity
+layout as the historical port. On boot, it restores that address, or adopts
+the one existing NimBLE bond if there is exactly one and no stored address.
+The Arduino loop schedules the reconnect; BLE callbacks never do synchronous
+connect/discovery. Successful HID subscription remembers the connected peer.
+The client is reused on disconnect to avoid repeated NimBLE client allocations.
+
+- Initial reboot: with keyboard awake and in the same BLE device slot, the E213
+  should connect without pressing B1/B2.
+- If the keyboard is turned off or unavailable, attempts are spaced 20 seconds
+  apart. After a successful connection drops, reconnect starts after 2.5 s.
+- Press B1 to select a different advertised keyboard, then B2 to connect:
+  manual selection temporarily cancels auto retry; the new successful keyboard
+  becomes the remembered keyboard.
+- When no usable last peer is present, the writer still scans normally. Make
+  one successful manual connection to populate NVS before testing automatic
+  reconnect.
+- For multi-device keyboards, reconnect only works when the keyboard is
+  awake and advertising/available on the same paired device slot. Another PC
+  or phone may claim the connection first.
+- Successful paired/bonded identity should survive RESET, save-and-sleep, and
+  power removal. If a keyboard uses only rotating, unbonded random addresses,
+  reconnect may require manual pairing again; we do not save a temporary
+  private address as a stable identity.
+- Serial output includes "Loaded last keyboard identity", "Reconnecting to
+  keyboard", and "Keyboard ready" messages to identify the failure stage.
+
+The native host test checks retry timing, rollover, manual-selection override,
+and invalid persisted identity structures. Physical BLE reconnect still needs
+testing with the actual keyboard.
