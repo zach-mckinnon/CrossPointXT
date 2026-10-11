@@ -50,6 +50,9 @@ jobs:
           g++ -std=c++17 -Wall -Wextra -Werror -pedantic \
             test/e213_sync/key_repeat_test.cpp -o /tmp/e213-key-repeat-test
           /tmp/e213-key-repeat-test
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic \
+            test/e213_sync/keyboard_reconnect_test.cpp -o /tmp/e213-keyboard-reconnect-test
+          /tmp/e213-keyboard-reconnect-test
 
   build-e213:
     runs-on: ubuntu-latest
