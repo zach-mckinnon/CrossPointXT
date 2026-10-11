@@ -243,3 +243,41 @@ linguistic segmentation.
 Next typography step: genuinely legible font faces sized ~8/12/16 px with
 pixel-accurate wrapping and correct cursor mapping, then SD-persisted display
 preferences. Any font/size setting must NEVER alter saved manuscript bytes.
+
+
+## Writerdeck editing shortcuts, focus mode, battery voltage
+
+New in dev (hardware keyboard testing still required):
+
+| Shortcut | Behavior |
+| --- | --- |
+| Ctrl+Z | Undo; consecutive typing and held-delete strokes are grouped |
+| Ctrl+Y | Redo; a new edit clears redo |
+| Home / End | Beginning / end of current prose sentence (. ! ? boundaries) |
+| Ctrl+Home / Ctrl+End | Beginning / end of entire document |
+| Hold Backspace / Delete | Initial press; auto repeat after 450 ms, faster after one and two seconds |
+| F11 or Ctrl+Shift+F | Toggle focus mode, hide header/footer and expand from 9 to 13 rows |
+| Ctrl+S / Ctrl+N / Ctrl+O | Save, create draft, open file picker |
+
+Undo history stores changes, not manuscript snapshots; it is bounded to 48
+operations and approximately 32 KiB per draft. Switching drafts or replacing
+the active file over USB clears history. History is RAM-only and does not
+survive a reboot; manuscripts continue to save to external SD.
+
+Battery voltage readout: the Heltec HT-VME213 datasheet identifies GPIO17
+as ADC_CTRL; the vendor schematic labels GPIO7 as VBAT_Read. The resistor
+divider is 390k/100k, so battery volts = measured input volts * 4.9.
+At startup and every 60 s, firmware briefly powers the divider, samples the
+ADC, and disables the divider again. It displays BAT 3.9V bottom-left when
+valid, BAT LOW under 3.45 V, or BAT -- when absent/out of range.
+
+Voltage display is a preliminary onboard-sensor measurement, NOT a
+calibrated state-of-charge percentage. The sensing circuit and polarity must
+be verified on the user's physical board before enabling low-battery
+automatic sleep/shutdown. A suitable protected 1-cell LiPo with the correct
+battery-connector polarity is required; never apply 5V to the battery jack.
+
+Still missing versus mature dedicated writerdecks: persistent sleep/wake,
+measured battery runtime, fast low-ghosting incremental e-ink refresh,
+comfortable Unicode/proportional fonts, selection/clipboard, search/replace,
+filename editing, robust power-loss tests, and validated Plot & Jot sync.
