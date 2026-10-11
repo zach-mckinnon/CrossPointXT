@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
-#include <HeltecKeyboardIdentity.h>
+#include "HeltecKeyboardIdentity.h"
 #include "KeyboardReconnect.h"
 
 #include <atomic>
