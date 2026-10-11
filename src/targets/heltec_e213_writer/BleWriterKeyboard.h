@@ -18,6 +18,13 @@ class BleWriterKeyboard {
     OpenFiles,
     NewFile,
     SaveFile,
+    Undo,
+    Redo,
+    FocusMode,
+    HomeSentence,
+    EndSentence,
+    HomeDocument,
+    EndDocument,
     Left,
     Right,
     Up,
@@ -83,6 +90,10 @@ class BleWriterKeyboard {
   volatile uint8_t queueHead = 0;
   volatile uint8_t queueTail = 0;
   uint8_t previousKeys[6] = {};
+  uint8_t heldDeleteCode = 0;
+  uint32_t deleteHeldSince = 0;
+  uint32_t nextDeleteAt = 0;
+  void processDeleteRepeat();
 
   NimBLEClient* client = nullptr;
 
