@@ -10,6 +10,7 @@
 #include "WriterSyncSerial.h"
 #include "WordWrap.h"
 #include "WriterStats.h"
+#include "WriterEditing.h"
 
 // E213 writer bring-up:
 // - external SPI microSD required for all working documents and sync metadata
@@ -27,6 +28,8 @@ constexpr int kTextTop = 20;
 constexpr int kTextBaselineStep = 9;
 constexpr int kCharactersPerLine = 39;
 constexpr int kVisibleRows = 9;
+constexpr int kFocusRows = 13;
+constexpr int kFocusTop = 4;
 
 constexpr unsigned long kRenderIdleDelayMs = 220;
 constexpr unsigned long kRenderMaxDelayMs = 900;
@@ -84,6 +87,8 @@ size_t cursor = 0;
 bool storageReady = false;
 bool dirty = false;
 bool saveFailed = false;
+bool focusMode = false;
+writerediting::History history;
 bool renderPending = true;
 bool syncWasBusy = false;
 uint32_t lastKeyboardStatusVersion = 0;
@@ -210,13 +215,14 @@ void renderWriter(const bool forceFull = false) {
   if (fileMenu) { renderFilePicker(); return; }
   const std::vector<VisualLine> lines = buildVisualLines();
   const size_t activeLine = cursorVisualLine(lines);
-  const size_t firstLine = activeLine >= static_cast<size_t>(kVisibleRows - 1)
-                               ? activeLine - static_cast<size_t>(kVisibleRows - 1)
-                               : 0;
+  const int rows = focusMode ? kFocusRows : kVisibleRows;
+  const size_t firstLine = activeLine >= static_cast<size_t>(rows - 1)
+                               ? activeLine - static_cast<size_t>(rows - 1) : 0;
 
   (void)forceFull;
   prepareDisplayFrame();
 
+    if (!focusMode) {
     // Top: manuscript name left, save state right. Never let them overlap.
     const char* status = serialSync.busy() ? "USB SYNC" :
                          saveFailed ? "SAVE ERR" :
@@ -229,11 +235,12 @@ void renderWriter(const bool forceFull = false) {
     display.setCursor(saveX, 9);
     display.print(saveLabel.c_str());
     display.drawLine(0, 14, display.width() - 1, 14, BLACK);
+    }
 
-    for (int row = 0; row < kVisibleRows; ++row) {
+    for (int row = 0; row < rows; ++row) {
       const size_t index = firstLine + static_cast<size_t>(row);
       if (index >= lines.size()) break;
-      const int baseline = kTextTop + row * kTextBaselineStep;
+      const int baseline = (focusMode ? kFocusTop : kTextTop) + row * kTextBaselineStep;
       display.setCursor(kTextLeft, baseline);
       display.print(lines[index].text.c_str());
 
@@ -244,6 +251,7 @@ void renderWriter(const bool forceFull = false) {
       }
     }
 
+    if (!focusMode) {
     // Bottom center: concise Bluetooth state. Bottom right: word count.
     // Keep the left side free for future battery or focus-mode indicators.
     display.drawLine(0, 110, display.width() - 1, 110, BLACK);
@@ -253,6 +261,7 @@ void renderWriter(const bool forceFull = false) {
     const std::string wordLabel = std::to_string(writerstats::countWords(document)) + " words";
     display.setCursor(writerstats::rightAlignedX(display.width(), wordLabel), 119);
     display.print(wordLabel.c_str());
+    }
   display.update();
 
   lastRenderAt = millis();
@@ -303,6 +312,7 @@ bool switchDraft(const std::string& name) {
   if (!writerfiles::read(name, next)) return false;
   activeName = name;
   document.swap(next);
+  history.clear(); // Never carry editing history into a different draft.
   saveFailed = false;
   cursor = document.size();
   if (!writerfiles::saveActiveName(name))
@@ -329,34 +339,36 @@ void markEdited() {
 
 void insertCharacter(const char c) {
   if (document.size() >= kMaxDraftBytes) return;
-  document.insert(document.begin() + static_cast<std::string::difference_type>(cursor), c);
-  ++cursor;
-  markEdited();
+  if (history.change(document, cursor, cursor, 0, std::string(1, c),
+                     millis(), writerediting::Kind::Insert)) markEdited();
 }
 
 void insertText(const char* text) {
   if (!text) return;
-  while (*text && document.size() < kMaxDraftBytes) {
-    insertCharacter(*text++);
-  }
+  const size_t available = kMaxDraftBytes - document.size();
+  const std::string bytes(text);
+  if (bytes.empty() || available == 0) return;
+  if (history.change(document, cursor, cursor, 0, bytes.substr(0, available),
+                     millis(), writerediting::Kind::Other)) markEdited();
 }
 
 void backspace() {
   if (cursor == 0 || document.empty()) return;
-  document.erase(cursor - 1, 1);
-  --cursor;
-  markEdited();
+  const size_t start = writerediting::previousCodepoint(document, cursor);
+  if (history.change(document, cursor, start, cursor - start, "",
+                     millis(), writerediting::Kind::Backspace)) markEdited();
 }
 
 void deleteForward() {
   if (cursor >= document.size()) return;
-  document.erase(cursor, 1);
-  markEdited();
+  const size_t end = writerediting::nextCodepoint(document, cursor);
+  if (history.change(document, cursor, cursor, end - cursor, "",
+                     millis(), writerediting::Kind::DeleteForward)) markEdited();
 }
 
 void moveCursorLeft() {
   if (cursor > 0) {
-    --cursor;
+    cursor = writerediting::previousCodepoint(document, cursor);
     renderPending = true;
     lastKeyAt = millis();
   }
@@ -364,10 +376,23 @@ void moveCursorLeft() {
 
 void moveCursorRight() {
   if (cursor < document.size()) {
-    ++cursor;
+    cursor = writerediting::nextCodepoint(document, cursor);
     renderPending = true;
     lastKeyAt = millis();
   }
+}
+
+void navigateTo(const size_t position) {
+  cursor = std::min(position, document.size());
+  renderPending = true;
+  lastKeyAt = millis();
+}
+
+void undoEdit() {
+  if (history.undo(document, cursor)) markEdited();
+}
+void redoEdit() {
+  if (history.redo(document, cursor)) markEdited();
 }
 
 void moveCursorVertical(const int direction) {
@@ -441,6 +466,19 @@ void handleKeyboardEvents() {
       case BleWriterKeyboard::KeyType::Backspace: backspace(); break;
       case BleWriterKeyboard::KeyType::DeleteKey: deleteForward(); break;
       case BleWriterKeyboard::KeyType::Tab: insertText("    "); break;
+      case BleWriterKeyboard::KeyType::Undo: undoEdit(); break;
+      case BleWriterKeyboard::KeyType::Redo: redoEdit(); break;
+      case BleWriterKeyboard::KeyType::FocusMode:
+        focusMode = !focusMode;
+        renderPending = true;
+        lastKeyAt = millis();
+        break;
+      case BleWriterKeyboard::KeyType::HomeSentence:
+        navigateTo(writerediting::sentenceStart(document, cursor)); break;
+      case BleWriterKeyboard::KeyType::EndSentence:
+        navigateTo(writerediting::sentenceEnd(document, cursor)); break;
+      case BleWriterKeyboard::KeyType::HomeDocument: navigateTo(0); break;
+      case BleWriterKeyboard::KeyType::EndDocument: navigateTo(document.size()); break;
       case BleWriterKeyboard::KeyType::Left: moveCursorLeft(); break;
       case BleWriterKeyboard::KeyType::Right: moveCursorRight(); break;
       case BleWriterKeyboard::KeyType::Up: moveCursorVertical(-1); break;
@@ -516,6 +554,7 @@ void loop() {
       std::string replacement;
       if (writerfiles::read(activeName, replacement)) {
         document.swap(replacement);
+        history.clear(); // USB replaced the active manuscript.
         saveFailed = false;
         cursor = std::min(cursor, document.size());
         renderPending = true;
