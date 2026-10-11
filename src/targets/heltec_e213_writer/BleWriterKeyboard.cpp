@@ -77,6 +77,20 @@ void BleWriterKeyboard::begin() {
   bumpVersion();
 }
 
+bool BleWriterKeyboard::end() {
+  const bool stopped = NimBLEDevice::deinit(true);
+  if (!stopped) return false;
+  activeKeyboard = nullptr;
+  client = nullptr;
+  connected = false;
+  connecting = false;
+  scanning = false;
+  scanRequested = false;
+  heldDeleteCode = 0;
+  clearQueue();
+  return true;
+}
+
 void BleWriterKeyboard::update() {
   if (connected) { processDeleteRepeat(); return; }
   if (connecting || scanning) return;
@@ -263,6 +277,7 @@ void BleWriterKeyboard::handleReport(const uint8_t* data, size_t length) {
       if (keyCode == 0x1D) pushEvent(KeyEvent{KeyType::Undo}); // Ctrl+Z
       if (keyCode == 0x1C) pushEvent(KeyEvent{KeyType::Redo}); // Ctrl+Y
       if (keyCode == 0x09 && shifted) pushEvent(KeyEvent{KeyType::FocusMode}); // Ctrl+Shift+F
+      if (keyCode == 0x14 && shifted) pushEvent(KeyEvent{KeyType::Sleep}); // Ctrl+Shift+Q
       if (keyCode == 0x4A) pushEvent(KeyEvent{KeyType::HomeDocument}); // Ctrl+Home
       if (keyCode == 0x4D) pushEvent(KeyEvent{KeyType::EndDocument}); // Ctrl+End
       continue;
