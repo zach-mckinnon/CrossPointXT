@@ -1,6 +1,5 @@
 #include <Arduino.h>
 #include <heltec-eink-modules.h>
-#include <LittleFS.h>
 
 #include <algorithm>
 #include <string>
@@ -11,9 +10,9 @@
 #include "WriterSyncSerial.h"
 
 // E213 writer bring-up:
-// - no microSD required
+// - external SPI microSD required for all working documents and sync metadata
 // - BLE HID keyboard input
-// - recoverable multi-document library stored in internal flash
+// - USB serial transfer reads/writes that same microSD card
 // - e-ink partial refresh with a typing-friendly debounce
 namespace {
 constexpr uint8_t kNextButton = 21;   // USER, active LOW.
@@ -242,6 +241,24 @@ void renderFilePicker() {
 }
 
 void renderWriter(const bool forceFull = false) {
+  if (!storageReady) {
+    prepareDisplayFrame();
+    display.setCursor(6, 10);
+    display.println("MICRO WRITER - SD REQUIRED");
+    display.drawLine(0, 14, display.width()-1, 14, BLACK);
+    display.setCursor(6, 40);
+    display.println("No writable SD card found.");
+    display.setCursor(6, 57);
+    display.println("Check SPI wiring + FAT32.");
+    display.setCursor(6, 73);
+    display.println("Then restart the E213.");
+    display.setCursor(6, 119);
+    display.println("Internal flash left untouched.");
+    display.update();
+    renderPending = false;
+    lastRenderAt = millis();
+    return;
+  }
   if (fileMenu) { renderFilePicker(); return; }
   const std::vector<VisualLine> lines = buildVisualLines();
   const size_t activeLine = cursorVisualLine(lines);
@@ -280,11 +297,11 @@ void renderWriter(const bool forceFull = false) {
     if (!keyboard.isConnected()) {
       display.print("Keyboard disconnected");
     } else if (!storageReady) {
-      display.print("RAM ONLY - flash unavailable");
+      display.print("NO SD CARD - writing disabled");
     } else if (dirty) {
       display.print("Editing... autosave pending");
     } else {
-      display.print("Saved internally");
+      display.print("Saved to SD card");
     }
   display.update();
 
@@ -293,24 +310,21 @@ void renderWriter(const bool forceFull = false) {
 }
 
 bool loadDraft() {
-  // Never auto-format on a mount failure: that could erase the user's drafts.
-  if (!LittleFS.begin(false)) {
-    Serial.println("LittleFS mount failed; writer will be RAM-only");
+  // SD is the source of truth. Do not silently fall back to limited flash.
+  if (!writerfiles::begin()) {
+    Serial.println("SD unavailable: writing and manuscript sync disabled.");
     return false;
   }
-  if (!LittleFS.exists("/drafts")) LittleFS.mkdir("/drafts");
+  // Copy any old internal-flash drafts to the card, never delete their originals.
+  // A failed import stops new writing until the source can be recovered safely.
+  if (!writerfiles::importLegacyFlashDrafts()) {
+    Serial.println("Legacy migration incomplete; recover old flash files before writing.");
+    return false;
+  }
   fileList = writerfiles::list();
   if (fileList.empty()) {
-    // Migrate non-destructively. Keep /draft.txt as a recovery copy.
-    std::string legacy;
-    if (LittleFS.exists("/draft.txt")) {
-      File old = LittleFS.open("/draft.txt", "r");
-      if (old && !old.isDirectory() && old.size() <= kMaxDraftBytes) {
-        while (old.available()) legacy.push_back(static_cast<char>(old.read()));
-      }
-      old.close();
-    }
-    if (!writerfiles::save(activeName, legacy)) return false;
+    // Fresh card: create the first document directly on SD, not LittleFS.
+    if (!writerfiles::save(activeName, "")) return false;
     fileList = writerfiles::list();
   }
   if (fileList.empty()) return false;
@@ -417,6 +431,8 @@ void moveCursorVertical(const int direction) {
 void handleKeyboardEvents() {
   BleWriterKeyboard::KeyEvent event;
   while (keyboard.popEvent(event)) {
+    // An absent or failed SD never turns the editor into unsafe RAM-only mode.
+    if (!storageReady) continue;
     if (event.type == BleWriterKeyboard::KeyType::OpenFiles) {
       if (!fileMenu && dirty && !saveDraft()) {
         Serial.println("Cannot open file picker: autosave failed");
@@ -521,7 +537,7 @@ void setup() {
   Serial.printf("E-ink ready: %dx%d\n", display.width(), display.height());
 
   storageReady = loadDraft();
-  Serial.printf("Internal draft storage: %s (%u bytes loaded)\n",
+  Serial.printf("SD draft storage: %s (%u bytes loaded)\n",
                 storageReady ? "ready" : "unavailable",
                 static_cast<unsigned>(document.size()));
 
@@ -533,8 +549,10 @@ void setup() {
 void loop() {
   // USB transfers never overwrite unsaved keystrokes. Failure leaves the draft intact.
   if (Serial.available() && dirty && storageReady && !saveDraft()) {
+    // Do not acknowledge a transfer while a dirty document cannot be saved.
     Serial.println("USB sync blocked: unsaved draft");
-  } else if (storageReady) {
+  } else {
+    // Even without SD, answer USB HELLO with an actionable sd-unavailable error.
     serialSync.poll();
     const std::string updated = serialSync.takeUpdatedName();
     if (updated == activeName && !dirty) {
