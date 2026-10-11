@@ -553,6 +553,8 @@ void loop() {
   if (millis() - batteryReadAt >= writerbattery::kReadIntervalMs && !serialSync.busy()) {
     batteryMillivolts = writerbattery::sampleMillivolts();
     batteryReadAt = millis();
+    // Don't hide a genuine low-battery warning behind distraction-free mode.
+    if (batteryMillivolts > 0 && batteryMillivolts < 3450) focusMode = false;
     renderPending = true;
   }
   // USB transfers never overwrite unsaved keystrokes. Failure leaves the draft intact.
