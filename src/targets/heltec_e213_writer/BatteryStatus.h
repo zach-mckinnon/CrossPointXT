@@ -42,7 +42,7 @@ inline Sample sample() {
   const int voltage = result.inferredBatteryMillivolts;
   result.validBatteryMillivolts = (voltage >= 2800 && voltage <= 4450) ? voltage : 0;
   Serial.printf("E213 battery: ADC_CTRL GPIO%d HIGH, ADC GPIO%d=%d mV, "
-                "estimated VBAT=%d mV, display=%s\\n",
+                "estimated VBAT=%d mV, display=%s\n",
                 kAdcControlGpio, kAdcReadGpio,
                 result.adcMillivolts, result.inferredBatteryMillivolts,
                 result.validBatteryMillivolts ? "valid" : "BAT -- (invalid/unavailable)");
