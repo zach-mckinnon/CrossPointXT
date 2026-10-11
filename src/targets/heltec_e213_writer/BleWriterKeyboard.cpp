@@ -57,6 +57,7 @@ void BleWriterKeyboard::begin() {
   clearQueue();
   clearCandidates();
   memset(previousKeys, 0, sizeof(previousKeys));
+  heldDeleteCode = 0;
   connected = false;
   connecting = false;
   scanning = false;
@@ -76,7 +77,8 @@ void BleWriterKeyboard::begin() {
 }
 
 void BleWriterKeyboard::update() {
-  if (connected || connecting || scanning) return;
+  if (connected) { processDeleteRepeat(); return; }
+  if (connecting || scanning) return;
 
   const unsigned long now = millis();
   if (!scanRequested && now - lastScanAt < kScanRetryMs) return;
@@ -225,6 +227,7 @@ void BleWriterKeyboard::handleDisconnect(NimBLEClient* disconnectedClient, int r
   connected = false;
   connecting = false;
   scanRequested = true;
+  heldDeleteCode = 0;
   memset(previousKeys, 0, sizeof(previousKeys));
   bumpVersion();
 }
@@ -243,16 +246,24 @@ void BleWriterKeyboard::handleReport(const uint8_t* data, size_t length) {
   const bool shifted = (modifiers & 0x22) != 0;
   const bool ctrl = (modifiers & 0x11) != 0;
   const uint8_t* keys = data + 2;
+  uint8_t pressedDelete = 0;
 
   for (int i = 0; i < 6; ++i) {
     const uint8_t keyCode = keys[i];
-    if (keyCode == 0 || keyAlreadyDown(keyCode, previousKeys)) continue;
+    if (keyCode == 0) continue;
+    if (!ctrl && (keyCode == 0x2A || keyCode == 0x4C)) pressedDelete = keyCode;
+    if (keyAlreadyDown(keyCode, previousKeys)) continue;
 
     // Ctrl shortcuts are commands, not text: never insert a literal O/N/S.
     if (ctrl) {
       if (keyCode == 0x12) pushEvent(KeyEvent{KeyType::OpenFiles}); // Ctrl+O
       if (keyCode == 0x11) pushEvent(KeyEvent{KeyType::NewFile}); // Ctrl+N
       if (keyCode == 0x16) pushEvent(KeyEvent{KeyType::SaveFile}); // Ctrl+S
+      if (keyCode == 0x1D) pushEvent(KeyEvent{KeyType::Undo}); // Ctrl+Z
+      if (keyCode == 0x1C) pushEvent(KeyEvent{KeyType::Redo}); // Ctrl+Y
+      if (keyCode == 0x09 && shifted) pushEvent(KeyEvent{KeyType::FocusMode}); // Ctrl+Shift+F
+      if (keyCode == 0x4A) pushEvent(KeyEvent{KeyType::HomeDocument}); // Ctrl+Home
+      if (keyCode == 0x4D) pushEvent(KeyEvent{KeyType::EndDocument}); // Ctrl+End
       continue;
     }
     if (const char character = keyCodeToAscii(keyCode, shifted); character != '\0') {
@@ -276,6 +287,15 @@ void BleWriterKeyboard::handleReport(const uint8_t* data, size_t length) {
       case 0x4C:
         pushEvent(KeyEvent{KeyType::DeleteKey});
         break;
+      case 0x4A:
+        pushEvent(KeyEvent{KeyType::HomeSentence});
+        break;
+      case 0x4D:
+        pushEvent(KeyEvent{KeyType::EndSentence});
+        break;
+      case 0x44: // F11
+        pushEvent(KeyEvent{KeyType::FocusMode});
+        break;
       case 0x4F:
         pushEvent(KeyEvent{KeyType::Right});
         break;
@@ -293,7 +313,21 @@ void BleWriterKeyboard::handleReport(const uint8_t* data, size_t length) {
     }
   }
 
+  // A held key remains present in HID reports; synthesize repeats in update().
+  // Holding Delete/Backspace first waits 450 ms, then repeats faster.
+  if (pressedDelete != heldDeleteCode) {
+    heldDeleteCode = pressedDelete;
+    deleteHeldSince = millis();
+    nextDeleteAt = deleteHeldSince + 450;
+  }
   memcpy(previousKeys, keys, sizeof(previousKeys));
+}
+
+void BleWriterKeyboard::processDeleteRepeat() {
+  if (!heldDeleteCode || static_cast<int32_t>(millis() - nextDeleteAt) < 0) return;
+  const uint32_t elapsed = millis() - deleteHeldSince;
+  pushEvent(KeyEvent{heldDeleteCode == 0x2A ? KeyType::Backspace : KeyType::DeleteKey});
+  nextDeleteAt = millis() + (elapsed > 2000 ? 40 : elapsed > 1000 ? 80 : 135);
 }
 
 char BleWriterKeyboard::keyCodeToAscii(const uint8_t keyCode, const bool shifted) {
