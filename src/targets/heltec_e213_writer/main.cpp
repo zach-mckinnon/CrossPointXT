@@ -11,6 +11,7 @@
 #include "WriterSyncSerial.h"
 #include "WordWrap.h"
 #include "WriterStats.h"
+#include "WriterScreenGeometry.h"
 #include "WriterEditing.h"
 #include "BatteryStatus.h"
 
@@ -25,21 +26,18 @@ constexpr uint8_t kSelectButton = 47;  // Existing wired external B2, active LOW
 
 constexpr size_t kMaxDraftBytes = writerfiles::kMaxDocumentBytes;
 
-constexpr int kTextLeft = 6;
-constexpr int kTextTop = 20;
-constexpr int kTextBaselineStep = 9;
+constexpr int kTextLeft = writergeometry::kLeft;
 constexpr int kCharactersPerLine = 39;
-constexpr int kVisibleRows = 9;
-constexpr int kFocusRows = 13;
-constexpr int kFocusTop = 4;
+constexpr int kVisibleRows = writergeometry::kNormalRows;
+constexpr int kFocusRows = writergeometry::kFocusRows;
 
 constexpr unsigned long kRenderIdleDelayMs = 220;
 constexpr unsigned long kRenderMaxDelayMs = 900;
 constexpr unsigned long kAutosaveDelayMs = 1800;
 constexpr unsigned long kPairingRefreshMs = 1000;
 
-// Vision Master E213 V1.1 uses the E0213A367-BW panel. This board-specific
-// driver also owns the Vext power sequencing required by the integrated panel.
+// This assembled E213 V1.1 has the FC1 panel verified during hardware bring-up.
+// The adapter bounds BUSY waits and handles Vext sequencing and sleep.
 HeltecE213Display display;
 
 BleWriterKeyboard keyboard;
@@ -129,9 +127,10 @@ int cursorColumn(const VisualLine& line) {
 void renderPairing(const bool forceFull = false) {
   prepareDisplayFrame(forceFull);
 
-    display.setCursor(6, 9);
+    display.setCursor(kTextLeft, writergeometry::kHeaderTop);
     display.println("E213 MICRO WRITER");
-    display.drawLine(0, 14, display.width() - 1, 14, BLACK);
+    display.drawLine(0, writergeometry::kHeaderDivider,
+                     display.width() - 1, writergeometry::kHeaderDivider, BLACK);
 
     display.setCursor(6, 27);
     display.println(keyboard.statusText());
@@ -145,7 +144,7 @@ void renderPairing(const bool forceFull = false) {
       display.setCursor(6, 71);
       display.println("3. Wait for it to appear");
       display.setCursor(6, 89);
-      display.println("USER: scan again");
+      display.println("B1: scan again");
     } else {
       const int selected = keyboard.selectedCandidateIndex();
       const int first = std::max(0, selected - 2);
@@ -158,14 +157,15 @@ void renderPairing(const bool forceFull = false) {
       }
     }
 
-    display.drawLine(0, 110, display.width() - 1, 110, BLACK);
-    display.setCursor(6, 119);
+    display.drawLine(0, writergeometry::footerDivider(display.height()),
+                     display.width() - 1, writergeometry::footerDivider(display.height()), BLACK);
+    display.setCursor(kTextLeft, writergeometry::footerTop(display.height()));
     if (!storageReady) {
       display.print("SD ERROR - WRITING DISABLED");
     } else if (keyboard.isConnecting()) {
       display.print("Connecting...");
     } else if (count > 0) {
-      display.print("USER next | BOOT connect");
+      display.print("B1 next | B2 connect");
     } else {
       display.print("BLE keyboards only");
     }
@@ -177,18 +177,20 @@ void renderPairing(const bool forceFull = false) {
 
 void renderFilePicker() {
   prepareDisplayFrame();
-  display.setCursor(6, 9);
+  display.setCursor(kTextLeft, writergeometry::kHeaderTop);
   display.print("FILES  ENTER:OPEN  ESC:BACK");
-  display.drawLine(0, 14, display.width() - 1, 14, BLACK);
+  display.drawLine(0, writergeometry::kHeaderDivider,
+                   display.width() - 1, writergeometry::kHeaderDivider, BLACK);
   const size_t first = fileIndex >= 6 ? fileIndex - 6 : 0;
   for (size_t row = 0; row < 8 && first + row < fileList.size(); ++row) {
     const size_t i = first + row;
-    display.setCursor(6, 25 + static_cast<int>(row) * 11);
+    display.setCursor(kTextLeft, writergeometry::fileRowTop(static_cast<int>(row)));
     display.print(i == fileIndex ? "> " : "  ");
     display.print(cropped(fileList[i], 34).c_str());
   }
-  display.drawLine(0, 110, display.width() - 1, 110, BLACK);
-  display.setCursor(6, 119);
+  display.drawLine(0, writergeometry::footerDivider(display.height()),
+                   display.width() - 1, writergeometry::footerDivider(display.height()), BLACK);
+  display.setCursor(kTextLeft, writergeometry::footerTop(display.height()));
   display.print("Ctrl+N: NEW   Ctrl+O: TOGGLE");
   display.update();
   renderPending = false;
@@ -198,16 +200,17 @@ void renderFilePicker() {
 void renderWriter(const bool forceFull = false) {
   if (!storageReady) {
     prepareDisplayFrame(forceFull);
-    display.setCursor(6, 10);
+    display.setCursor(kTextLeft, writergeometry::kHeaderTop);
     display.println("MICRO WRITER - SD REQUIRED");
-    display.drawLine(0, 14, display.width()-1, 14, BLACK);
+    display.drawLine(0, writergeometry::kHeaderDivider,
+                     display.width() - 1, writergeometry::kHeaderDivider, BLACK);
     display.setCursor(6, 40);
     display.println("No writable SD card found.");
     display.setCursor(6, 57);
     display.println("Check SPI wiring + FAT32.");
     display.setCursor(6, 73);
     display.println("Then restart the E213.");
-    display.setCursor(6, 119);
+    display.setCursor(kTextLeft, writergeometry::footerTop(display.height()));
     display.println("Internal flash left untouched.");
     display.update();
     renderPending = false;
@@ -231,37 +234,40 @@ void renderWriter(const bool forceFull = false) {
     const std::string saveLabel(status);
     const int saveX = writerstats::rightAlignedX(display.width(), saveLabel);
     const size_t maxTitle = writerstats::titleColumns(saveX);
-    display.setCursor(kTextLeft, 9);
+    display.setCursor(kTextLeft, writergeometry::kHeaderTop);
     display.print(cropped(activeName, maxTitle).c_str());
-    display.setCursor(saveX, 9);
+    display.setCursor(saveX, writergeometry::kHeaderTop);
     display.print(saveLabel.c_str());
-    display.drawLine(0, 14, display.width() - 1, 14, BLACK);
+    display.drawLine(0, writergeometry::kHeaderDivider,
+                     display.width() - 1, writergeometry::kHeaderDivider, BLACK);
     }
 
     for (int row = 0; row < rows; ++row) {
       const size_t index = firstLine + static_cast<size_t>(row);
       if (index >= lines.size()) break;
-      const int baseline = (focusMode ? kFocusTop : kTextTop) + row * kTextBaselineStep;
-      display.setCursor(kTextLeft, baseline);
+      const int rowTop = writergeometry::bodyRowTop(row, focusMode);
+      display.setCursor(kTextLeft, rowTop);
       display.print(lines[index].text.c_str());
 
       if (index == activeLine) {
         const int column = std::min(cursorColumn(lines[index]), kCharactersPerLine);
         const int x = std::min(display.width() - 2, kTextLeft + column * 6);
-        display.drawLine(x, baseline - 7, x, baseline, BLACK);
+        display.drawLine(x, rowTop, x, writergeometry::caretBottom(rowTop), BLACK);
       }
     }
 
     if (!focusMode) {
     // Battery left, Bluetooth center, live word count right.
-    display.drawLine(0, 110, display.width() - 1, 110, BLACK);
-    display.setCursor(6, 119);
+    display.drawLine(0, writergeometry::footerDivider(display.height()),
+                     display.width() - 1, writergeometry::footerDivider(display.height()), BLACK);
+    const int footerTop = writergeometry::footerTop(display.height());
+    display.setCursor(kTextLeft, footerTop);
     display.print(writerbattery::displayLabel(batteryMillivolts).c_str());
     const std::string btLabel = keyboard.isConnected() ? "BT:OK" : "BT:--";
-    display.setCursor(writerstats::centeredX(display.width(), btLabel), 119);
+    display.setCursor(writerstats::centeredX(display.width(), btLabel), footerTop);
     display.print(btLabel.c_str());
     const std::string wordLabel = std::to_string(writerstats::countWords(document)) + " words";
-    display.setCursor(writerstats::rightAlignedX(display.width(), wordLabel), 119);
+    display.setCursor(writerstats::rightAlignedX(display.width(), wordLabel), footerTop);
     display.print(wordLabel.c_str());
     }
   display.update();
@@ -589,7 +595,7 @@ void setup() {
                 static_cast<unsigned long>(ESP.getFlashChipSize()),
                 static_cast<unsigned long>(ESP.getPsramSize()));
 
-  Serial.println("Initializing E213 V1.1 E0213A367-BW display...");
+  Serial.println("Initializing E213 LCMEN2R13EFC1 (FC1) display...");
   display.begin();
   display.landscape();
   display.clear();
