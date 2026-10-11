@@ -44,9 +44,10 @@ int main() {
   }
   {
     const auto lines = wrapWords("one two\nthree four", 8);
-    assert(lines.size() == 2);
+    assert(lines.size() == 3);
     assert(lines[0].text == "one two");
     assert(lines[1].text == "three");
+    assert(lines[2].text == "four");
   }
   {
     const auto lines = wrapWords("one\n\n", 8);
