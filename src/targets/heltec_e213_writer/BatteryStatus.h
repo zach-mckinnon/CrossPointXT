@@ -16,19 +16,39 @@ inline void begin() {
   digitalWrite(kAdcControlGpio, LOW); // Low-power divider disabled outside reads.
   analogSetPinAttenuation(kAdcReadGpio, ADC_11db);
 }
-inline int sampleMillivolts() {
+// One raw reading, averaged ADC voltage and the inferred battery voltage.
+// An invalid measurement is not necessarily an empty battery: USB power with
+// the external battery switch off can leave the sensing circuit unpowered.
+struct Sample {
+  int adcMillivolts = 0;
+  int inferredBatteryMillivolts = 0;
+  int validBatteryMillivolts = 0;
+};
+
+inline Sample sample() {
   digitalWrite(kAdcControlGpio, HIGH);
-  delay(5);
+  delay(15); // Give the high-impedance divider time to settle.
+  (void)analogReadMilliVolts(kAdcReadGpio); // Discard first ADC conversion.
   uint32_t sum = 0;
-  for (int i = 0; i < 6; ++i) {
+  for (int i = 0; i < 8; ++i) {
     sum += static_cast<uint32_t>(analogReadMilliVolts(kAdcReadGpio));
     delay(1);
   }
   digitalWrite(kAdcControlGpio, LOW);
-  // R17=390k R19=100k, sense voltage * 4.9 => battery millivolts.
-  const int voltage = static_cast<int>((sum * 49 + 30) / 60);
-  return voltage >= 2800 && voltage <= 4450 ? voltage : 0;
+  Sample result;
+  result.adcMillivolts = static_cast<int>((sum + 4) / 8);
+  // R17=390k R19=100k: VBAT = 4.9 * ADC input.
+  result.inferredBatteryMillivolts = static_cast<int>((sum * 49 + 40) / 80);
+  const int voltage = result.inferredBatteryMillivolts;
+  result.validBatteryMillivolts = (voltage >= 2800 && voltage <= 4450) ? voltage : 0;
+  Serial.printf("E213 battery: ADC_CTRL GPIO%d HIGH, ADC GPIO%d=%d mV, "
+                "estimated VBAT=%d mV, display=%s\\n",
+                kAdcControlGpio, kAdcReadGpio,
+                result.adcMillivolts, result.inferredBatteryMillivolts,
+                result.validBatteryMillivolts ? "valid" : "BAT -- (invalid/unavailable)");
+  return result;
 }
+inline int sampleMillivolts() { return sample().validBatteryMillivolts; }
 inline std::string displayLabel(int millivolts) {
   if (millivolts == 0) return "BAT --";
   if (millivolts < 3450) return "BAT LOW";
