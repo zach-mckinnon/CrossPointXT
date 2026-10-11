@@ -2,6 +2,39 @@
 
 Active development: dev. No plans to merge into the original CrossPoint project.
 
+## Merged v1_1 physical hardware baseline
+
+The assembled writer was verified on the historical
+port/heltec-e213-v1_1 branch with an **LCMEN2R13EFC1 panel** and
+externally soldered B1=GPIO42, B2=GPIO47, in addition to the SPI SD wires
+CS38/MOSI39/SCK40/MISO41. These are not the onboard USER/BOOT buttons.
+The default BW display driver hung on this unit, so the dev writer now uses
+the FC1 display adapter with a ten-second display BUSY timeout and a
+MISO=NC workaround for PSRAM GPIO33. SD SPI clock is 1 MHz.
+
+Wired controls in the merged dev writer:
+- B1 short (keyboard connected): save and enter document picker.
+- B1 short (picker): move to next document; B2 short opens it.
+- B1 long (picker): leave the picker.
+- B1 short (pairing): select next keyboard, or request scanning.
+- B1 long (pairing): open files without a keyboard.
+- B2 short (writing): force SD save.
+- B2 short (pairing): connect selected keyboard.
+- **B2 hold >=1.2 seconds and release**: save active work, blank the display,
+  end Bluetooth and enter deep sleep. **RESET wakes.**
+- Ctrl+Shift+Q: same save-and-sleep from BLE keyboard.
+
+The dev implementation is a newer SD-only editor. The old v1_1
+LittleFS checkpoint storage and nested-folder browser **are not active**
+in dev, because their data model conflicts with the current USB/SD
+sync manifest and /drafts layout. The historical v1_1 commit is retained
+as a merge parent and its separate SD-card Plot n Jot workflow remains
+available for future adaptation. Do not mix the two storage layouts or
+expect old v1_1 .e213-bak recovery files to be recognized by new dev.
+
+The port/heltec-e213-v1_1 branch remains unchanged; the git merge
+does not include uncommitted edits on a local Windows checkout.
+
 ## Storage — USB writes to SD, not internal flash
 
 **The external microSD is the only active manuscript storage.** USB serial is a
