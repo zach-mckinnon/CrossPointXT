@@ -2,11 +2,17 @@
 
 #include <FS.h>  // need to be included before SdFat.h for compatibility with FS.h's File class
 #include <Logging.h>
+#include <Memory.h>
+#ifdef HELTEC_E213_V11
+#include "HeltecStorageBackend.h"
+#define SDCard HeltecStorageBackend::instance()
+#else
 #include <SDCardManager.h>
+#define SDCard SDCardManager::getInstance()
+#endif
 
 #include <cassert>
 
-#define SDCard SDCardManager::getInstance()
 
 HalStorage HalStorage::instance;
 
@@ -83,7 +89,11 @@ HalFile& HalFile::operator=(HalFile&&) = default;
 
 HalFile HalStorage::open(const char* path, const oflag_t oflag) {
   StorageLock lock;  // ensure thread safety for the duration of this function
-  return HalFile(std::make_unique<HalFile::Impl>(SDCard.open(path, oflag)));
+  // One bounded handle allocation per open; the pimpl owns the SDK file and
+  // serializes destruction. Allocation failure returns a closed HalFile.
+  auto handle = makeUniqueNoThrow<HalFile::Impl>(SDCard.open(path, oflag));
+  if (!handle) LOG_ERR("STO", "Out of memory opening file");
+  return HalFile(std::move(handle));
 }
 
 bool HalStorage::mkdir(const char* path, const bool pFlag) { HAL_STORAGE_WRAPPED_CALL(mkdir, path, pFlag); }
@@ -101,8 +111,10 @@ bool HalStorage::openFileForRead(const char* moduleName, const char* path, HalFi
   StorageLock lock;  // ensure thread safety for the duration of this function
   FsFile fsFile;
   bool ok = SDCard.openFileForRead(moduleName, path, fsFile);
-  file = HalFile(std::make_unique<HalFile::Impl>(std::move(fsFile)));
-  return ok;
+  auto handle = makeUniqueNoThrow<HalFile::Impl>(std::move(fsFile));
+  if (!handle) LOG_ERR("STO", "Out of memory opening file");
+  file = HalFile(std::move(handle));
+  return ok && file;
 }
 
 bool HalStorage::openFileForRead(const char* moduleName, const std::string& path, HalFile& file) {
@@ -117,8 +129,10 @@ bool HalStorage::openFileForWrite(const char* moduleName, const char* path, HalF
   StorageLock lock;  // ensure thread safety for the duration of this function
   FsFile fsFile;
   bool ok = SDCard.openFileForWrite(moduleName, path, fsFile);
-  file = HalFile(std::make_unique<HalFile::Impl>(std::move(fsFile)));
-  return ok;
+  auto handle = makeUniqueNoThrow<HalFile::Impl>(std::move(fsFile));
+  if (!handle) LOG_ERR("STO", "Out of memory opening file");
+  file = HalFile(std::move(handle));
+  return ok && file;
 }
 
 bool HalStorage::openFileForWrite(const char* moduleName, const std::string& path, HalFile& file) {
@@ -145,6 +159,7 @@ bool HalStorage::removeDir(const char* path) { HAL_STORAGE_WRAPPED_CALL(removeDi
   return impl->file.method(__VA_ARGS__);
 
 void HalFile::flush() { HAL_FILE_WRAPPED_CALL(flush, ); }
+bool HalFile::sync() { HAL_FILE_WRAPPED_CALL(sync, ); }
 size_t HalFile::getName(char* name, size_t len) { HAL_FILE_WRAPPED_CALL(getName, name, len); }
 size_t HalFile::size() { HAL_FILE_FORWARD_CALL(size, ); }              // already thread-safe, no need to wrap
 size_t HalFile::fileSize() { HAL_FILE_FORWARD_CALL(fileSize, ); }      // already thread-safe, no need to wrap
@@ -169,7 +184,9 @@ bool HalFile::close() { HAL_FILE_WRAPPED_CALL(close, ); }
 HalFile HalFile::openNextFile() {
   HalStorage::StorageLock lock;
   assert(impl != nullptr);
-  return HalFile(std::make_unique<Impl>(impl->file.openNextFile()));
+  auto handle = makeUniqueNoThrow<Impl>(impl->file.openNextFile());
+  if (!handle) LOG_ERR("STO", "Out of memory listing directory");
+  return HalFile(std::move(handle));
 }
 bool HalFile::isOpen() const { return impl != nullptr && impl->file.isOpen(); }  // already thread-safe, no need to wrap
 HalFile::operator bool() const { return isOpen(); }

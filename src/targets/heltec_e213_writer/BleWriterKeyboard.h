@@ -2,7 +2,10 @@
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include <HeltecKeyboardIdentity.h>
+#include "KeyboardReconnect.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -18,7 +21,10 @@ class BleWriterKeyboard {
     Left,
     Right,
     Up,
-    Down
+    Down,
+    Save,
+    Sleep,
+    Files
   };
 
   struct KeyEvent {
@@ -34,10 +40,13 @@ class BleWriterKeyboard {
   };
 
   void begin();
+  bool end();
   void update();
   bool isConnected() const { return connected; }
   bool isScanning() const { return scanning; }
-  bool isConnecting() const { return connecting; }
+  bool isConnecting() const { return connecting || reconnectPending; }
+  bool isAutoReconnecting() const { return reconnectPending || automaticAttempt; }
+  bool hasAutomaticReconnect() const { return reconnect.enabled(); }
   bool popEvent(KeyEvent& event);
 
   int candidateCount() const;
@@ -65,12 +74,18 @@ class BleWriterKeyboard {
   static constexpr uint16_t kReportUuid = 0x2A4D;
   static constexpr uint8_t kBootProtocol = 0x00;
 
-  volatile bool connected = false;
-  volatile bool connecting = false;
-  volatile bool scanning = false;
-  volatile bool scanRequested = false;
-  volatile uint32_t version = 0;
+  std::atomic<bool> connected{false};
+  bool connecting = false;  // Owned by the Arduino loop.
+  std::atomic<bool> scanning{false};
+  std::atomic<bool> scanRequested{false};
+  std::atomic<bool> disconnectedEvent{false};
+  std::atomic<bool> lostReadyConnection{false};
+  std::atomic<uint32_t> version{0};
   uint32_t lastScanAt = 0;
+  HeltecKeyboardIdentity rememberedPeer;
+  KeyboardReconnect reconnect;
+  bool reconnectPending = false;
+  bool automaticAttempt = false;
 
   Candidate candidates[kMaxCandidates];
   int candidateTotal = 0;
@@ -83,6 +98,10 @@ class BleWriterKeyboard {
 
   NimBLEClient* client = nullptr;
 
+  bool connectAddress(const NimBLEAddress& address);
+  bool connectionFailed(const char* reason);
+  void loadRememberedPeer();
+  void rememberConnectedPeer();
   void clearQueue();
   void clearCandidates();
   void pushEvent(KeyEvent event);
