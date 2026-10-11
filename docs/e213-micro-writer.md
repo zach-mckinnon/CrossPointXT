@@ -349,3 +349,36 @@ The client is reused on disconnect to avoid repeated NimBLE client allocations.
 The native host test checks retry timing, rollover, manual-selection override,
 and invalid persisted identity structures. Physical BLE reconnect still needs
 testing with the actual keyboard.
+
+
+### Diagnosing a keyboard that needs pairing mode after writer power-cycle
+
+A BLE peripheral can advertise a different set of fields when reconnecting:
+it may omit its keyboard name, HID service UUID, and appearance. The dev
+scanner now matches the stored identity address/type BEFORE its generic HID
+advertisement filter, so a known keyboard is still recognized when such fields
+are missing. A detected known advertisement triggers an early auto-connect
+attempt after a five-second failure guard; ordinary retries still occur after
+20 seconds. It does NOT automatically trust another device merely because
+it uses the same keyboard name.
+
+First, pair/connect manually once after flashing. In the serial monitor
+(115200), verify:
+- "Connection security: bonded=1" and "Saved keyboard identity verified in
+  persistent NVS" (bonded=0 is a useful clue if the keyboard won't reconnect).
+- On the next RESET or power-cycle: "Loaded last keyboard identity" and
+  "Auto-connect attempt" followed by either "Keyboard ready" or the exact
+  connection failure. A seen advertisement gives "Saved keyboard IS advertising".
+- If no saved peer is reported, NVS storage was absent or the keyboard's
+  changing private address could not be remembered. No full-flash erase is
+  required simply to test reconnection.
+
+A BLE central cannot force a peripheral that has stopped advertising to
+reconnect. Some keyboard models wake and advertise after a keypress or a
+short power toggle; some only resume advertising in pairing mode. Test the
+same Bluetooth device slot and ensure a PC/phone hasn't claimed the keyboard.
+If you see no "Saved keyboard IS advertising" after 30-60 seconds and several
+keypresses, the keyboard may not be advertising except in pairing mode; the
+serial log and keyboard model are needed to distinguish that limitation from
+a failed bond or incorrectly stored address. Do NOT erase the NVS partition or
+re-pair repeatedly without checking the logs, because that obscures diagnosis.
