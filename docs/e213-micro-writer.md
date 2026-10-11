@@ -159,3 +159,59 @@ asterisks as literal text unless Plot & Jot is upgraded with a matching
 formatting-aware editing/rendering mode. USB transfer can preserve the markup
 bytes unchanged, but preserving true styled appearance on both devices
 requires coordinated changes to BOTH projects.
+
+
+## Pre-test reliability workflow (recommended order)
+
+These steps are intended for the first physical Heltec V1.1 test. CI cannot
+verify the wiring, battery supply, BLE keyboard HID reports or e-ink speed.
+
+1. **Protect the original:** Back up existing flash drafts and manuscripts
+   before uploading a new build. Do not erase the whole flash/partition.
+2. **Check external SD module power and pinouts:** FAT32 microSD, correct 3.3 V
+   logic levels, CS=38 MOSI=39 SCK=40 MISO=41 as *proposed, not verified*.
+   Check the module's VCC rating. Start with a throwaway card and test text.
+3. **Check boot and card failure handling:** Boot with no card; editor should
+   warn and disable writing, not write to internal flash. Reinsert the card,
+   reboot, and verify the SD storage-ready console message.
+4. **Test writing before syncing:** Pair BLE keyboard; enter several paragraphs,
+   use Ctrl+S, Ctrl+N, Ctrl+O, move the cursor, disconnect the keyboard immediately
+   after typing, and reboot. The SD draft contents must survive intact.
+5. **Back up active SD drafts using USB before the first live Plot & Jot sync.**
+   With COM10 connected, no serial monitor, and no keyboard typing:
+
+       python tools/e213-sync/plot_jot_sync.py --port COM10 --backup-device ./e213-backups
+
+   This is READ ONLY on the E213 and does not need the Plot & Jot checkout.
+   It checks SHA-256 during transfer and checks its own local copies afterward.
+   This USB snapshot includes active TXT drafts and the sync manifest only.
+   It is NOT a whole-card image: .bak/.failed recovery files and hidden
+   non-manuscript files require a separate full card-reader copy.
+6. **Test one explicit Plot & Jot scene link, then preview writes** with the
+   desktop Plot & Jot app closed:
+
+       python tools/e213-sync/plot_jot_sync.py --plot-source ../plot-and-jot-source --project 42 --port COM10 --sync --dry-run
+
+   This displays PUSH/PULL/CONFLICT actions and changes neither side. After
+   inspecting the preview, run the same command without --dry-run to apply it.
+   An initial --bind modifies the card's .sync manifest, so first back up
+   manuscripts and choose --prefer deliberately if two copies differ.
+7. **Verify both directions:** Edit on Heltec, sync to desktop, inspect exact
+   scene content. Edit that same desktop scene, sync back, and inspect SD text.
+   Create a conflicting change on *both* sides and confirm neither is overwritten
+   and the device copy appears in the laptop's e213-conflicts directory.
+
+Never pull the card or disconnect power during an ordinary live SD write.
+Controlled power-loss tests belong after the basic recovery path is proven.
+
+### Still not production-certified
+
+- External microSD GPIO mapping and module power have not been validated.
+- There is no battery-low write cutoff, error recovery for unexpected physical
+  card removal, or verified endurance/power-cut fault-injection test.
+- The current line wrapping is smart at word boundaries but uses 39 **byte**
+  columns; full UTF-8/proportional typography and Markdown bold/italic rendering
+  are still planned.
+- USB transfer is designed for one authorized local laptop, not multiple
+  concurrent writers. Do not type during a USB sync; the UI indicates the pause.
+- Direct card-reader Plot & Jot sync and per-novel folders are not implemented.
