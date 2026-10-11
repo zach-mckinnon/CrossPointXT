@@ -643,7 +643,9 @@ void loop() {
     syncWasBusy = syncBusy;
     renderPending = true;
   }
-  keyboard.update();
+  // A synchronous reconnect must not block while a wired button is being held.
+  if (digitalRead(kNextButton) != LOW && digitalRead(kSelectButton) != LOW)
+    keyboard.update();
   handleButtons();
 
   const bool connected = keyboard.isConnected();
