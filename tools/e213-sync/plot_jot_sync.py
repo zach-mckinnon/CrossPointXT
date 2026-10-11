@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""USB manuscript sync between E213 internal flash and local Plot & Jot.
+"""USB manuscript sync between the E213 microSD and local Plot & Jot.
 
 No server, cloud account, or network required. Explicit .sync scene IDs are the
 only relationships; filenames/titles are never used to guess a destination.
@@ -20,7 +20,7 @@ from pathlib import Path
 PREFIX = "E213SYNC1|"
 NAME = re.compile(r"^[A-Za-z0-9 _-]{1,44}\.txt$")
 HASH = re.compile(r"^[a-f0-9]{64}$")
-MAX_FILE = 65536
+MAX_FILE = 128 * 1024  # RAM-safe per-scene transfer cap; SD card storage is larger
 MAX_MANIFEST = 16384
 
 
@@ -69,7 +69,7 @@ class USB:
         time.sleep(2)
         self.send("HELLO")
         if self.next() != ["READY"]:
-            raise RuntimeError("E213 sync protocol not available on this firmware")
+            raise RuntimeError("E213 microSD sync not available (check external card and SPI wiring)")
 
     def close(self):
         self.serial.close()
