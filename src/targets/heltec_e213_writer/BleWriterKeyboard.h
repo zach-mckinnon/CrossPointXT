@@ -88,6 +88,10 @@ class BleWriterKeyboard {
   std::atomic<bool> scanRequested{false};
   std::atomic<bool> disconnectedEvent{false};
   std::atomic<bool> lostReadyConnection{false};
+  // Set in BLE advertisement callback, consumed on Arduino loop.
+  std::atomic<bool> knownAdvertisementSeen{false};
+  bool knownAdvertisementLogged = false;
+  uint32_t autoAttemptCount = 0;
   std::atomic<uint32_t> version{0};
   uint32_t lastScanAt = 0;
   HeltecKeyboardIdentity rememberedPeer;
