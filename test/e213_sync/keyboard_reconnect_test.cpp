@@ -1,5 +1,6 @@
 #include "../../src/targets/heltec_e213_writer/KeyboardReconnect.h"
 #include "../../src/targets/heltec_e213_writer/HeltecKeyboardIdentity.h"
+#include "../../src/targets/heltec_e213_writer/KnownKeyboardAdvertisement.h"
 
 constexpr bool reconnectLifecycle() {
   KeyboardReconnect policy;
@@ -38,4 +39,32 @@ static_assert(!HeltecKeyboardIdentity{1, 0, {255, 255, 255, 255, 255, 255}}.vali
 static_assert(!(validPeer == HeltecKeyboardIdentity{1, 0, {1, 2, 3, 4, 5, 0xc6}}));
 static_assert(!(validPeer == HeltecKeyboardIdentity{1, 1, {1, 2, 3, 4, 5, 0xc7}}));
 
-int main() { return reconnectLifecycle() && reconnectAcrossMillisWrap() ? 0 : 1; }
+
+// Known keyboard advertisements can omit HID service, appearance and name.
+// Matching the persisted identity is enough; another device is never trusted
+// just because it advertises the same name.
+constexpr uint8_t knownAddress[6] = {1, 2, 3, 4, 5, 0xc6};
+constexpr uint8_t otherAddress[6] = {1, 2, 3, 4, 5, 0xc7};
+static_assert(writerkeyboard::matchesKnownPeer(validPeer, knownAddress, 1));
+static_assert(!writerkeyboard::matchesKnownPeer(validPeer, otherAddress, 1));
+static_assert(!writerkeyboard::matchesKnownPeer(validPeer, knownAddress, 0));
+static_assert(!writerkeyboard::matchesKnownPeer(HeltecKeyboardIdentity{}, knownAddress, 1));
+static_assert(!writerkeyboard::matchesKnownPeer(validPeer, nullptr, 1));
+
+constexpr bool advertisementRetryLifecycle() {
+  KeyboardReconnect policy;
+  policy.begin(false, 10);
+  if (policy.knownAdvertisementDue(50000)) return false;
+  policy.begin(true, 10);
+  if (policy.knownAdvertisementDue(5009) || !policy.knownAdvertisementDue(5010)) return false;
+  policy.failed(7000);
+  if (policy.knownAdvertisementDue(11999) || !policy.knownAdvertisementDue(12000)) return false;
+  policy.manualSelection();
+  if (policy.knownAdvertisementDue(70000)) return false;
+  policy.connected(100000);
+  return policy.knownAdvertisementDue(105000);
+}
+static_assert(advertisementRetryLifecycle());
+static_assert(KeyboardReconnect::ADVERTISEMENT_RETRY_MS == 5000);
+
+int main() { return reconnectLifecycle() && reconnectAcrossMillisWrap() && advertisementRetryLifecycle() ? 0 : 1; }
