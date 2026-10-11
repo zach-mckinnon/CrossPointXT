@@ -137,14 +137,25 @@ void renderPairing(const bool forceFull = false) {
 
     const int count = keyboard.candidateCount();
     if (count == 0) {
-      display.setCursor(6, 45);
-      display.println("1. Turn keyboard on");
-      display.setCursor(6, 58);
-      display.println("2. Put it in pairing mode");
-      display.setCursor(6, 71);
-      display.println("3. Wait for it to appear");
-      display.setCursor(6, 89);
-      display.println("B1: scan again");
+      if (keyboard.hasAutomaticReconnect()) {
+        display.setCursor(6, 45);
+        display.println("Saved keyboard: waiting for BLE");
+        display.setCursor(6, 58);
+        display.println("Tap a key to wake the keyboard");
+        display.setCursor(6, 71);
+        display.println("Keep the same Bluetooth slot");
+        display.setCursor(6, 89);
+        display.println("B1: manual scan / other device");
+      } else {
+        display.setCursor(6, 45);
+        display.println("1. Turn keyboard on");
+        display.setCursor(6, 58);
+        display.println("2. Put it in pairing mode");
+        display.setCursor(6, 71);
+        display.println("3. Wait for it to appear");
+        display.setCursor(6, 89);
+        display.println("B1: scan again");
+      }
     } else {
       const int selected = keyboard.selectedCandidateIndex();
       const int first = std::max(0, selected - 2);
