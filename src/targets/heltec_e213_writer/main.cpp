@@ -207,7 +207,9 @@ void renderPairing(const bool forceFull = false) {
 
     display.drawLine(0, 110, display.width() - 1, 110, BLACK);
     display.setCursor(6, 119);
-    if (keyboard.isConnecting()) {
+    if (!storageReady) {
+      display.print("SD ERROR - WRITING DISABLED");
+    } else if (keyboard.isConnecting()) {
       display.print("Connecting...");
     } else if (count > 0) {
       display.print("USER next | BOOT connect");
