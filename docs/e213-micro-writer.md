@@ -121,3 +121,41 @@ CI compiles E213 writer and tests sync rules on dev. Actual GPIO wiring,
 SD read/write endurance, reboot recovery and a real USB Plot & Jot round trip
 still require hardware validation. Direct removable-card-reader sync (without
 E213) is a separate, not-yet-implemented transport.
+
+
+## Text layout and rich-formatting plan
+
+### Smart word wrapping (implemented in dev, hardware validation pending)
+
+The E213 currently uses a compact fixed-width screen font with 39 columns.
+The new editor layout wraps before the next word when possible, splitting only
+an unbroken word longer than a display row. Hidden wrap spaces stay in the
+underlying text, and soft wraps NEVER add newline bytes to the SD manuscript.
+Cursor-up/down and cursor placement use the same visual-line mapping. Host
+regression tests run via test/e213_sync/word_wrap_test.cpp.
+
+For a truly proportional font, replace the 39-column measure with per-glyph
+pixel widths (including bold/italic font variants). Preserve UTF-8 code point
+boundaries in cursor movement, deletion and wrapping.
+
+### Bold and italics (planned, NOT implemented yet)
+
+Prefer lightweight Markdown source, with a formatted E213 reading/editing view:
+- One asterisk around words for italic, two for bold, three for bold italic.
+- Keyboard Ctrl+B / Ctrl+I should toggle styles around a selection; if nothing
+  is selected, toggle the style for subsequently typed text.
+- The visual editor should draw with matched regular, bold, italic, bold-italic
+  Adafruit GFX fonts. Hidden Markdown control characters still need correct
+  source-to-screen cursor mapping.
+- Save the original text and markup to the SD card. Do not write visual line
+  breaks into the document and do not destroy ordinary literal asterisks.
+- Rendering must handle incomplete Markdown pairs and escape sequences safely.
+- On 250x122 hardware, use compact readable font variants; large 9-12pt fonts
+  reduce words per line substantially.
+
+Important compatibility detail: Plot & Jot's current scene editor stores
+plain text using setPlainText/toPlainText. Its present UI will show Markdown
+asterisks as literal text unless Plot & Jot is upgraded with a matching
+formatting-aware editing/rendering mode. USB transfer can preserve the markup
+bytes unchanged, but preserving true styled appearance on both devices
+requires coordinated changes to BOTH projects.
