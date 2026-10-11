@@ -1,5 +1,6 @@
 #include <Arduino.h>
-#include <heltec-eink-modules.h>
+#include "HeltecE213Display.h"
+#include <esp_sleep.h>
 
 #include <algorithm>
 #include <string>
@@ -19,8 +20,8 @@
 // - USB serial transfer reads/writes that same microSD card
 // - e-ink partial refresh with a typing-friendly debounce
 namespace {
-constexpr uint8_t kNextButton = 21;   // USER, active LOW.
-constexpr uint8_t kSelectButton = 0;  // BOOT; do not hold during reset.
+constexpr uint8_t kNextButton = 42;    // Existing wired external B1, active LOW.
+constexpr uint8_t kSelectButton = 47;  // Existing wired external B2, active LOW.
 
 constexpr size_t kMaxDraftBytes = writerfiles::kMaxDocumentBytes;
 
@@ -39,7 +40,7 @@ constexpr unsigned long kPairingRefreshMs = 1000;
 
 // Vision Master E213 V1.1 uses the E0213A367-BW panel. This board-specific
 // driver also owns the Vext power sequencing required by the integrated panel.
-EInkDisplay_VisionMasterE213V1_1 display;
+HeltecE213Display display;
 
 BleWriterKeyboard keyboard;
 WriterSyncSerial serialSync;
@@ -70,7 +71,7 @@ struct Button {
       return ButtonEvent::None;
     }
 
-    return now - pressedAt >= 700 ? ButtonEvent::Long : ButtonEvent::Short;
+    return now - pressedAt >= 1200 ? ButtonEvent::Long : ButtonEvent::Short;
   }
 };
 
@@ -106,9 +107,8 @@ std::string cropped(const std::string& value, const size_t maxChars) {
   return value.substr(0, maxChars - 1) + "~";
 }
 
-void prepareDisplayFrame() {
-  display.fullscreen();
-  display.clearMemory();
+void prepareDisplayFrame(bool forceFull = false) {
+  display.prepareFrame(forceFull);
   display.setTextColor(BLACK);
   display.setTextSize(1);
   display.setTextWrap(false); // We wrap whole words ourselves, not by Adafruit GFX.
@@ -127,8 +127,7 @@ int cursorColumn(const VisualLine& line) {
 }
 
 void renderPairing(const bool forceFull = false) {
-  (void)forceFull;
-  prepareDisplayFrame();
+  prepareDisplayFrame(forceFull);
 
     display.setCursor(6, 9);
     display.println("E213 MICRO WRITER");
@@ -198,7 +197,7 @@ void renderFilePicker() {
 
 void renderWriter(const bool forceFull = false) {
   if (!storageReady) {
-    prepareDisplayFrame();
+    prepareDisplayFrame(forceFull);
     display.setCursor(6, 10);
     display.println("MICRO WRITER - SD REQUIRED");
     display.drawLine(0, 14, display.width()-1, 14, BLACK);
@@ -222,8 +221,7 @@ void renderWriter(const bool forceFull = false) {
   const size_t firstLine = activeLine >= static_cast<size_t>(rows - 1)
                                ? activeLine - static_cast<size_t>(rows - 1) : 0;
 
-  (void)forceFull;
-  prepareDisplayFrame();
+  prepareDisplayFrame(forceFull);
 
     if (!focusMode) {
     // Top: manuscript name left, save state right. Never let them overlap.
@@ -414,11 +412,36 @@ void moveCursorVertical(const int direction) {
   lastKeyAt = millis();
 }
 
+// Sleep only after pending work has been safely committed to SD; RESET wakes.
+void saveAndSleep() {
+  if (!storageReady || serialSync.busy()) {
+    Serial.println("Sleep refused: storage unavailable or USB transfer active.");
+    renderPending = true;
+    return;
+  }
+  if (dirty && !saveDraft()) {
+    Serial.println("Sleep refused: manuscript save failed.");
+    return;
+  }
+  if (!display.blankForSleep() || !keyboard.end()) {
+    Serial.println("Sleep refused: display blanking or Bluetooth shutdown failed.");
+    renderPending = true;
+    return;
+  }
+  Serial.println("E213: saved, display blank, entering deep sleep; RESET wakes.");
+  Serial.flush();
+  display.sleepUntilReset();
+}
+
 void handleKeyboardEvents() {
   BleWriterKeyboard::KeyEvent event;
   while (keyboard.popEvent(event)) {
     // An absent or failed SD never turns the editor into unsafe RAM-only mode.
     if (!storageReady) continue;
+    if (event.type == BleWriterKeyboard::KeyType::Sleep) {
+      saveAndSleep();
+      continue;
+    }
     if (event.type == BleWriterKeyboard::KeyType::OpenFiles) {
       if (!fileMenu && dirty && !saveDraft()) {
         Serial.println("Cannot open file picker: autosave failed");
@@ -492,12 +515,53 @@ void handleKeyboardEvents() {
   }
 }
 
-void handlePairingButtons() {
+void handleButtons() {
   const ButtonEvent next = nextButton.poll();
   const ButtonEvent select = selectButton.poll();
+  if (select == ButtonEvent::Long) {
+    saveAndSleep(); // Always permit wired B2 save-and-sleep, even without keyboard.
+    return;
+  }
+  if (next == ButtonEvent::None && select == ButtonEvent::None) return;
 
-  if (keyboard.isConnected()) return;
+  if (fileMenu) {
+    if (next == ButtonEvent::Long) {
+      fileMenu = false;
+    } else if (next == ButtonEvent::Short) {
+      if (!fileList.empty()) fileIndex = (fileIndex + 1) % fileList.size();
+    } else if (select == ButtonEvent::Short && fileIndex < fileList.size()) {
+      if (!switchDraft(fileList[fileIndex])) {
+        Serial.println("Cannot open file from button: save/read failed");
+      }
+    }
+    renderPending = true;
+    lastKeyAt = millis();
+    return;
+  }
 
+  if (keyboard.isConnected()) {
+    if (next == ButtonEvent::Short || next == ButtonEvent::Long) {
+      if (dirty && !saveDraft()) return;
+      fileList = writerfiles::list();
+      const auto found = std::find(fileList.begin(), fileList.end(), activeName);
+      fileIndex = found != fileList.end() ?
+          static_cast<size_t>(found - fileList.begin()) : 0;
+      fileMenu = true;
+      renderPending = true;
+    } else if (select == ButtonEvent::Short && !saveDraft()) {
+      Serial.println("B2 save failed");
+    }
+    return;
+  }
+
+  // No keyboard: wired B1/B2 select and pair keyboards.
+  if (next == ButtonEvent::Long && storageReady) {
+    fileList = writerfiles::list();
+    fileIndex = 0;
+    fileMenu = true;
+    renderFilePicker();
+    return;
+  }
   if (next != ButtonEvent::None) {
     if (keyboard.candidateCount() > 0 && next == ButtonEvent::Short) {
       keyboard.selectNextCandidate();
@@ -506,15 +570,11 @@ void handlePairingButtons() {
     }
     renderPairing();
   }
-
   if (select == ButtonEvent::Short && keyboard.candidateCount() > 0) {
     renderPairing();
     keyboard.connectSelectedCandidate();
-    if (keyboard.isConnected()) {
-      renderWriter(true);
-    } else {
-      renderPairing(true);
-    }
+    if (keyboard.isConnected()) renderWriter(true);
+    else renderPairing(true);
   }
 }
 
@@ -533,6 +593,8 @@ void setup() {
   display.begin();
   display.landscape();
   display.clear();
+  Serial.printf("External buttons B1 GPIO42=%d B2 GPIO47=%d (idle 1)\n",
+                digitalRead(kNextButton), digitalRead(kSelectButton));
   Serial.printf("E-ink ready: %dx%d\n", display.width(), display.height());
 
   writerbattery::begin();
@@ -582,7 +644,7 @@ void loop() {
     renderPending = true;
   }
   keyboard.update();
-  handlePairingButtons();
+  handleButtons();
 
   const bool connected = keyboard.isConnected();
   if (connected) {
