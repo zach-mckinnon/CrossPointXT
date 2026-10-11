@@ -4,10 +4,15 @@
 #include <vector>
 
 namespace writerfiles {
-constexpr size_t kMaxDocumentBytes = 64 * 1024;
-constexpr size_t kMaxDocuments = 40;
+// Files live on removable microSD, not the E213's internal flash.
+// A single file is RAM-capped for safe editing on ESP32-S3; card capacity is separate.
+constexpr size_t kMaxDocumentBytes = 128 * 1024;
+constexpr size_t kMaxDocuments = 200;
 
-// Restrict names so the USB protocol cannot escape /drafts or inject delimiters.
+// Hardware: external SPI microSD module. Proposed E213 V1.1 GPIOs; validate wiring.
+bool begin();
+bool ready();
+bool importLegacyFlashDrafts(); // One-time, copy-only import; never erases flash.
 bool validName(const std::string& name);
 std::vector<std::string> list();
 std::string nextName();
