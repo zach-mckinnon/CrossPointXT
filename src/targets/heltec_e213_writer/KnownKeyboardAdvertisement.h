@@ -5,7 +5,7 @@
 #include <cstdint>
 
 namespace writerkeyboard {
-inline bool matchesKnownPeer(const HeltecKeyboardIdentity& stored,
+constexpr bool matchesKnownPeer(const HeltecKeyboardIdentity& stored,
                              const uint8_t* address, uint8_t addressType) {
   if (!stored.valid() || !address || stored.type != addressType) return false;
   for (unsigned i = 0; i < 6; ++i) {
