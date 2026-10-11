@@ -83,6 +83,7 @@ size_t cursor = 0;
 bool storageReady = false;
 bool dirty = false;
 bool renderPending = true;
+bool syncWasBusy = false;
 uint32_t lastKeyboardStatusVersion = 0;
 unsigned long lastEditAt = 0;
 unsigned long lastKeyAt = 0;
@@ -243,6 +244,8 @@ void renderWriter(const bool forceFull = false) {
       display.print("Keyboard disconnected");
     } else if (!storageReady) {
       display.print("NO SD CARD - writing disabled");
+    } else if (serialSync.busy()) {
+      display.print("USB SYNC - NO TYPING");
     } else if (dirty) {
       display.print("Editing... autosave pending");
     } else {
@@ -509,6 +512,11 @@ void loop() {
       }
     }
   }
+  const bool syncBusy = serialSync.busy();
+  if (syncBusy != syncWasBusy) {
+    syncWasBusy = syncBusy;
+    renderPending = true;
+  }
   keyboard.update();
   handlePairingButtons();
 
@@ -522,19 +530,22 @@ void loop() {
       handleKeyboardEvents();
     }
 
-    if (dirty && storageReady && millis() - lastEditAt >= kAutosaveDelayMs) {
-      if (saveDraft()) {
-        Serial.printf("Draft autosaved (%u bytes)\n", static_cast<unsigned>(document.size()));
-        renderPending = true;
-      } else {
-        Serial.println("Draft autosave failed");
-      }
-    }
-
     const unsigned long now = millis();
     if (renderPending &&
         ((now - lastKeyAt >= kRenderIdleDelayMs) || (now - lastRenderAt >= kRenderMaxDelayMs))) {
       renderWriter();
+    }
+  }
+
+  // A keyboard can disconnect immediately after typing; autosave must not be
+  // conditional on the BLE connection remaining active.
+  if (dirty && storageReady && !serialSync.busy() &&
+      millis() - lastEditAt >= kAutosaveDelayMs) {
+    if (saveDraft()) {
+      Serial.printf("Draft autosaved (%u bytes)\n", static_cast<unsigned>(document.size()));
+      renderPending = true;
+    } else {
+      Serial.println("Draft autosave failed");
     }
   }
 
