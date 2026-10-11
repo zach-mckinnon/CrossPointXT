@@ -11,6 +11,7 @@
 #include "WordWrap.h"
 #include "WriterStats.h"
 #include "WriterEditing.h"
+#include "BatteryStatus.h"
 
 // E213 writer bring-up:
 // - external SPI microSD required for all working documents and sync metadata
@@ -89,6 +90,8 @@ bool dirty = false;
 bool saveFailed = false;
 bool focusMode = false;
 writerediting::History history;
+int batteryMillivolts = 0;
+uint32_t batteryReadAt = 0;
 bool renderPending = true;
 bool syncWasBusy = false;
 uint32_t lastKeyboardStatusVersion = 0;
@@ -252,9 +255,10 @@ void renderWriter(const bool forceFull = false) {
     }
 
     if (!focusMode) {
-    // Bottom center: concise Bluetooth state. Bottom right: word count.
-    // Keep the left side free for future battery or focus-mode indicators.
+    // Battery left, Bluetooth center, live word count right.
     display.drawLine(0, 110, display.width() - 1, 110, BLACK);
+    display.setCursor(6, 119);
+    display.print(writerbattery::displayLabel(batteryMillivolts).c_str());
     const std::string btLabel = keyboard.isConnected() ? "BT:OK" : "BT:--";
     display.setCursor(writerstats::centeredX(display.width(), btLabel), 119);
     display.print(btLabel.c_str());
@@ -531,7 +535,11 @@ void setup() {
   display.clear();
   Serial.printf("E-ink ready: %dx%d\n", display.width(), display.height());
 
+  writerbattery::begin();
+  batteryMillivolts = writerbattery::sampleMillivolts();
+  batteryReadAt = millis();
   storageReady = loadDraft();
+  Serial.printf("Battery sense: %d mV (0=unavailable)\n", batteryMillivolts);
   Serial.printf("SD draft storage: %s (%u bytes loaded)\n",
                 storageReady ? "ready" : "unavailable",
                 static_cast<unsigned>(document.size()));
@@ -542,6 +550,11 @@ void setup() {
 }
 
 void loop() {
+  if (millis() - batteryReadAt >= writerbattery::kReadIntervalMs && !serialSync.busy()) {
+    batteryMillivolts = writerbattery::sampleMillivolts();
+    batteryReadAt = millis();
+    renderPending = true;
+  }
   // USB transfers never overwrite unsaved keystrokes. Failure leaves the draft intact.
   if (Serial.available() && dirty && storageReady && !saveDraft()) {
     // Do not acknowledge a transfer while a dirty document cannot be saved.
