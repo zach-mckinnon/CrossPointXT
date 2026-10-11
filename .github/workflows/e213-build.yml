@@ -44,6 +44,9 @@ jobs:
           g++ -std=c++17 -Wall -Wextra -Werror -pedantic \
             test/e213_sync/writer_stats_test.cpp -o /tmp/e213-writer-stats-test
           /tmp/e213-writer-stats-test
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic \
+            test/e213_sync/writer_editing_test.cpp -o /tmp/e213-writer-editing-test
+          /tmp/e213-writer-editing-test
 
   build-e213:
     runs-on: ubuntu-latest
