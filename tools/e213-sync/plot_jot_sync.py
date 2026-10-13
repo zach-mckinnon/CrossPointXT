@@ -82,7 +82,10 @@ class USB:
                     # A previous connection may have left an uncommitted PUT
                     # open. Its delayed timeout must not poison the next
                     # idempotent HELLO handshake.
-                    if str(exc) == "E213 refused command: timeout":
+                    if str(exc) in (
+                        "E213 refused command: timeout",
+                        "E213 refused command: download-timeout",
+                    ):
                         continue
                     raise
                 if reply == ["READY"]:
@@ -147,8 +150,14 @@ class USB:
                     or "stalled after" in detail
                     or "response timed out" in detail
                 )
-                if attempt or not transient:
+                if not transient:
                     raise
+                if attempt:
+                    raise RuntimeError(
+                        f"E213 download {name} failed twice despite a fresh "
+                        f"read-only connection reset: {detail}. "
+                        "No partial file was accepted; keep the SD originals."
+                    ) from exc
                 try:
                     self.reset_download_session()
                 except Exception as reset_exc:
