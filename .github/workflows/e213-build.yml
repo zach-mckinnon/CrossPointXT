@@ -48,6 +48,9 @@ jobs:
             test/e213_sync/writer_names_test.cpp -o /tmp/e213-writer-names-test
           /tmp/e213-writer-names-test
           g++ -std=c++17 -Wall -Wextra -Werror -pedantic \
+            test/e213_sync/writer_outline_test.cpp -o /tmp/e213-writer-outline-test
+          /tmp/e213-writer-outline-test
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic \
             test/e213_sync/writer_screen_geometry_test.cpp -o /tmp/e213-screen-geometry-test
           /tmp/e213-screen-geometry-test
           g++ -std=c++17 -Wall -Wextra -Werror -pedantic \
