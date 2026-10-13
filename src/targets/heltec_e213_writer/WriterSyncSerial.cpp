@@ -66,6 +66,50 @@ void WriterSyncSerial::sendGet(const std::string& name) {
   emit("END");
 }
 
+// GET2 is strictly stop-and-wait: the host requests each following frame
+// with an ACK, preventing the ESP32-S3 CDC TX queue from being flooded.
+void WriterSyncSerial::clearDownload() {
+  sending_ = false;
+  download_.clear();
+  downloadOffset_ = 0;
+}
+
+void WriterSyncSerial::beginGet2(const std::string& name) {
+  if (!allowed(name)) { emit("ERR|invalid-name"); return; }
+  std::string data;
+  if (!readFile(name, data)) { emit("ERR|not-found"); return; }
+  download_.swap(data);
+  downloadOffset_ = 0;
+  sending_ = true;
+  lastDownloadAt_ = millis();
+  emit("BEGIN|" + std::to_string(download_.size()) + "|" + sha(download_));
+}
+
+void WriterSyncSerial::sendGet2Next() {
+  if (!sending_) { emit("ERR|unexpected-ack"); return; }
+  lastDownloadAt_ = millis();
+  if (downloadOffset_ >= download_.size()) {
+    clearDownload();
+    emit("END");
+    return;
+  }
+  // 24 raw bytes -> <=32 base64 characters + 16 bytes of framing.
+  // Both host RX and ESP32 CDC TX stay below 64 bytes per DATA line.
+  constexpr size_t kChunkBytes = 24;
+  const size_t count = std::min(kChunkBytes, download_.size() - downloadOffset_);
+  unsigned char encoded[4 * ((kChunkBytes + 2) / 3) + 1] = {};
+  size_t written = 0;
+  if (mbedtls_base64_encode(encoded, sizeof(encoded), &written,
+      reinterpret_cast<const unsigned char*>(download_.data() + downloadOffset_),
+      count) != 0) {
+    clearDownload();
+    emit("ERR|encode");
+    return;
+  }
+  downloadOffset_ += count;
+  emit("DATA|" + std::string(reinterpret_cast<const char*>(encoded), written));
+}
+
 void WriterSyncSerial::beginPut(const std::string& name, const std::string& expectedHash,
                                 size_t size) {
   if (!allowed(name) || size > (name == ".sync" ? 16384 : writerfiles::kMaxDocumentBytes)) {
@@ -135,6 +179,20 @@ void WriterSyncSerial::onLine(const std::string& line) {
     emit("ERR|sd-unavailable");
     return;
   }
+  if (sending_) {
+    // A new application session can cancel only the in-RAM download state.
+    // No SD file or .sync manifest is written during GET2.
+    if (args[0] == "HELLO" && args.size() == 1) {
+      clearDownload();
+      emit("READY");
+    } else if (args[0] == "ACK" && args.size() == 1) {
+      sendGet2Next();
+    } else {
+      clearDownload();
+      emit("ERR|download-protocol");
+    }
+    return;
+  }
   if (receiving_) {
     // An interrupted upload leaves a partial in-RAM buffer. A newly opened
     // desktop app needs to be able to handshake again, even before the upload
@@ -171,6 +229,7 @@ void WriterSyncSerial::onLine(const std::string& line) {
     return;
   }
   if (args[0] == "GET" && args.size() == 2) { sendGet(args[1]); return; }
+  if (args[0] == "GET2" && args.size() == 2) { beginGet2(args[1]); return; }
   if (args[0] == "PUT" && args.size() == 4) {
     char* tail = nullptr;
     const unsigned long requested = strtoul(args[3].c_str(), &tail, 10);
@@ -203,6 +262,10 @@ void WriterSyncSerial::poll() {
   // transfer with no incoming DATA, not to the total time for a large scene.
   if (receiving_ && millis() - lastChunkAt_ > 60000UL)
     abort("timeout");
+  if (sending_ && millis() - lastDownloadAt_ > 60000UL) {
+    clearDownload();
+    emit("ERR|download-timeout");
+  }
 }
 std::string WriterSyncSerial::takeUpdatedName() {
   std::string name;
