@@ -20,6 +20,7 @@ class BleWriterKeyboard {
     Escape,
     OpenFiles,
     NewFile,
+    RenameFile,
     SaveFile,
     Sleep,
     Undo,
