@@ -162,6 +162,20 @@ retry after **Scan E213**. The writer does not need to be reflashed
 *specifically* for the smaller host packets. Existing identical orphaned
 drafts can be relinked safely.
 
+**If download fails with `Invalid base64-encoded string`:** the older
+writer firmware's GET command streamed 192-byte chunks into 272-byte USB
+frames without waiting for the host; this could truncate/corrupt Base64
+while reading existing SD scenes or making a safety backup. The new
+**GET2** protocol sends one 24-byte chunk per host acknowledgment and
+checks each frame and final SHA-256 before accepting the file. **Update
+both sides:** pull the latest `dev` on your Linux laptop, flash
+`heltec_e213_writer` to the E213, and restart E213 Personal Sync.
+The updated GUI deliberately refuses the old firmware's unsafe GET command
+with an actionable firmware-update error; it never silently accepts damaged
+text. Neither firmware update nor transfer failures should require SD
+formatting. Test read-only **Backup E213** first, then Scan E213, then
+resume imports or syncing.
+
 **If you see `E213 refused command: timeout`:** this is the firmware's
 incoming PUT inactivity timer, not an initial USB/Bluetooth discovery failure.
 Previously it expired after 15 seconds and checked before draining buffered
