@@ -94,6 +94,26 @@ class PersonalSyncSafetyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             personal.link_scene(*self.args, "Chapter One.txt", 101, "device")
 
+    def test_unlink_preserves_both_copies_and_allows_rename(self):
+        personal.link_scene(*self.args, "Chapter One.txt", 101, "device")
+        output = personal.unlink_scene(*self.args, "Chapter One.txt")
+        self.assertIn("Unlinked", output)
+        self.assertEqual(self.usb.data["Chapter One.txt"], b"written on the E213")
+        self.assertEqual(self.db.scene["content"], "written on laptop")
+        self.assertEqual(__import__("json").loads(self.usb.data[".sync"])["scenes"], {})
+
+    def test_confirmed_sync_pushes_only_after_preview_and_makes_backups(self):
+        personal.link_scene(*self.args, "Chapter One.txt", 101, "device")
+        with patch.object(personal.bridge, "backup_db",
+                          return_value=Path(self.tmp.name) / "backup.db") as backup:
+            output = personal.sync_action(*self.args, apply=True)
+        self.assertIn("PUSH", output)
+        self.assertTrue(backup.called)
+        self.assertEqual(self.db.scene["content"], "written on the E213")
+        manifest = __import__("json").loads(self.usb.data[".sync"])
+        self.assertEqual(manifest["scenes"]["Chapter One.txt"]["revision"],
+                         bridge.checksum(b"written on the E213"))
+
     def test_importing_personal_sync_does_not_modify_plot_jot(self):
         self.assertTrue(callable(personal.sync_action))
         self.assertTrue(callable(personal.default_db_path))
