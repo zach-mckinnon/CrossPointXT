@@ -149,6 +149,19 @@ If there is no reply, verify the selected serial port, a USB data cable, and
 the physical SD card; the GUI reports an actionable error instead of silently
 continuing.
 
+**If you see `E213 refused command: timeout`:** this is the firmware's
+incoming PUT inactivity timer, not an initial USB/Bluetooth discovery failure.
+Previously it expired after 15 seconds and checked before draining buffered
+USB data. The new writer firmware drains input first, tolerates 60 seconds
+between DATA chunks, and lets a fresh HELLO reset any abandoned partial
+upload without overwriting the existing SD file. The Linux host now reports
+the exact filename, PUT phase, and acknowledged byte count. If there was
+a stalled transfer, keep the E213 in USB SYNC, click **Scan E213** and verify
+what was actually copied. Retry the import only after confirming any existing
+unlinked file and scene mapping; identical unlinked copies can be recovered
+without reuploading. Update BOTH the Linux app (`git pull` and reopen) and
+the E213 firmware (`heltec_e213_writer` flash) for the full fix.
+
 **If an import says it copied TXT but could not save `.sync`:** the TXT was
 written to the SD card. Do not delete/reimport it. Click **Scan E213**,
 select the existing file and the correct Plot n Jot scene, then **Link
