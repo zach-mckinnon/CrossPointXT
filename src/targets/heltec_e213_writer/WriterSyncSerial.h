@@ -8,6 +8,9 @@ class WriterSyncSerial {
  public:
   void poll();
   bool busy() const { return receiving_; }
+  // Host activity enables USB SYNC screen and pauses BLE scanning.
+  // A grace period covers users inspecting the PC UI between transfers.
+  bool hostActive() const { return hostSeen_ && millis() - lastHostAt_ < 60000UL; }
   std::string takeUpdatedName();
  private:
   std::string incoming_;
@@ -17,6 +20,8 @@ class WriterSyncSerial {
   std::string changed_;
   size_t expectedLength_ = 0;
   bool receiving_ = false;
+  bool hostSeen_ = false;
+  unsigned long lastHostAt_ = 0;
   unsigned long lastChunkAt_ = 0;
   void onLine(const std::string& line);
   void abort(const char* reason);
