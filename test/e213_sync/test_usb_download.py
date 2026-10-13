@@ -11,13 +11,17 @@ import plot_jot_sync as bridge
 
 class DownloadSerial:
     def __init__(self, filename, content, *, corrupt_at=None, legacy=False,
-                 stale_header_once=False, invalid_header_always=False):
+                 stale_header_once=False, invalid_header_always=False,
+                 download_timeout_once_at=None, download_timeout_always_at=None):
         self.filename = filename
         self.content = content
         self.corrupt_at = corrupt_at
         self.legacy = legacy
         self.stale_header_once = stale_header_once
         self.invalid_header_always = invalid_header_always
+        self.download_timeout_once_at = download_timeout_once_at
+        self.download_timeout_always_at = download_timeout_always_at
+        self.sent_download_timeout = False
         self.requests = 0
         self.resets = 0
         self.offset = 0
@@ -58,6 +62,13 @@ class DownloadSerial:
             if not self.active:
                 raise AssertionError("ACK without active download")
             self.acks += 1
+            if (self.download_timeout_always_at == self.acks or
+                    (self.download_timeout_once_at == self.acks and
+                     not self.sent_download_timeout)):
+                self.sent_download_timeout = True
+                self.active = False
+                self.lines.append(b"E213SYNC1|ERR|download-timeout\n")
+                return len(data)
             if self.offset == len(self.content):
                 self.lines.append(b"E213SYNC1|END\n")
                 self.active = False
@@ -122,6 +133,26 @@ class UsbGet2Tests(unittest.TestCase):
         self.assertEqual(serial.requests, 2)
         self.assertEqual(serial.resets, 1)
         self.assertEqual(serial.content, b"diary prose")
+
+    def test_download_timeout_one_restarts_get2_without_touching_manuscript(self):
+        original = b"an unsynced diary entry" * 50
+        serial = DownloadSerial("Diary.txt", original,
+                                download_timeout_once_at=3)
+        downloaded, revision = self.client(serial).get("Diary.txt")
+        self.assertEqual(downloaded, original)
+        self.assertEqual(revision, bridge.checksum(original))
+        self.assertEqual(serial.requests, 2)
+        self.assertEqual(serial.resets, 1)
+        self.assertEqual(serial.content, original)
+
+    def test_repeated_download_timeout_stops_after_one_clean_retry(self):
+        serial = DownloadSerial("Diary.txt", b"original diary content",
+                                download_timeout_always_at=2)
+        with self.assertRaisesRegex(RuntimeError, "download-timeout"):
+            self.client(serial).get("Diary.txt")
+        self.assertEqual(serial.requests, 2)
+        self.assertEqual(serial.resets, 1)
+        self.assertEqual(serial.content, b"original diary content")
 
     def test_empty_scene_returns_empty_and_one_end_ack(self):
         serial = DownloadSerial("Empty.txt", b"")
