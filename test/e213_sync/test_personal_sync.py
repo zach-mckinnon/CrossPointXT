@@ -327,10 +327,10 @@ class PersonalSyncSafetyTests(unittest.TestCase):
                          "scenes": [{"id": 201, "title": "Scene 1"}]}]
             return orig_manuscript(project_id)
 
-        with patch.object(self.db, "get_scene", side_effect=multi_scene), \
-             patch.object(self.db, "get_project", side_effect=multi_project), \\
-             patch.object(self.db, "get_full_manuscript_data",
-                          side_effect=multi_manuscript):
+        with (patch.object(self.db, "get_scene", side_effect=multi_scene),
+              patch.object(self.db, "get_project", side_effect=multi_project),
+              patch.object(self.db, "get_full_manuscript_data",
+                           side_effect=multi_manuscript)):
             report = personal.import_scenes(
                 self.args[0], self.args[1], self.args[2], 43, [201])
             self.assertIn("1 linked", report)
