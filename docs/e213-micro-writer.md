@@ -125,12 +125,15 @@ scene as an ordinary UTF-8 `.txt` on the E213 microSD card.
    and **Bluetooth scanning paused**. No Bluetooth keyboard is required.
 2. Open **E213 Personal Sync** on Linux, click **Detect**, **Load projects**,
    select a Plot n Jot project, then **Scan E213**. Close other serial monitors.
-3. In the **Map selected document to scene** dropdown choose an existing
-   chapter scene. Click **Import selected Plot n Jot scene to E213**.
-4. Confirm the proposed TXT filename. The tool refuses duplicates, backs up
-   existing SD files, writes the scene to a **new** document, verifies its
-   SHA-256 and content, and binds it to its Plot n Jot scene in `/.sync`.
-   Plot n Jot's scene and database are NOT modified on import.
+3. Choose **Import one scene** to enter a filename for one selected chapter
+   scene, or choose **Import multiple scenes…**, select scenes with Ctrl/Shift,
+   and use **Select all** for a full project/chapter batch.
+4. Each scene gets a separate TXT with its own explicit `/.sync` binding.
+   The tool backs up SD first, refuses to overwrite existing drafts, verifies
+   document readbacks, and confirms each mapping before continuing.
+   A byte-for-byte identical unlinked file left by an interrupted import
+   is **relinked without copying or overwriting it**. Different content is
+   preserved and reported for manual resolution. Plot n Jot itself is unchanged.
 5. After import, hold B1 to exit USB SYNC. With keyboard connected press
    Ctrl+O, select the imported TXT, and press Enter. Type and save normally.
    Later return to USB SYNC and use Preview changes / Sync now to transfer
@@ -145,6 +148,17 @@ USB SYNC before clicking Scan or Import. The sync mode does not require pairing.
 If there is no reply, verify the selected serial port, a USB data cable, and
 the physical SD card; the GUI reports an actionable error instead of silently
 continuing.
+
+**If an import says it copied TXT but could not save `.sync`:** the TXT was
+written to the SD card. Do not delete/reimport it. Click **Scan E213**,
+select the existing file and the correct Plot n Jot scene, then **Link
+selected** (choose Plot n Jot text as initial priority if the copies match
+or if the desktop scene must be preserved). Or rerun **Import multiple
+scenes…**, which automatically relinks an identical orphan. This will not
+silently overwrite divergent text. The GUI now shows the original error code
+rather than hiding it behind a generic message. If it recurs after updating
+firmware, share the precise `ERR|...` code: `invalid-manifest`,
+`stale-version`, or `write-failed|<SD step>`.
 
 Existing manuscript names and Plot n Jot links are never overwritten by
 Import. A file is limited to 128 KiB. Some Unicode punctuation may not render
