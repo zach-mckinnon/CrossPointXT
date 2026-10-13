@@ -144,7 +144,8 @@ def import_scene(port: str, source: str, database: str, project_id: int,
             raise RuntimeError(
                 f"{filename} was copied to SD, but its .sync link could not be saved. "
                 "The text remains on the SD as an unlinked document. Rescan and link "
-                "that document rather than importing it again."
+                "that document rather than importing it again. "
+                f"Actual device error: {type(exc).__name__}: {exc}"
             ) from exc
         return (
             f"IMPORTED {filename} from Plot n Jot scene #{scene_id}.\n"
