@@ -99,7 +99,11 @@ void WriterSyncSerial::finishPut() {
   }
   const bool saved = destination_ == ".sync" ?
       writerfiles::saveManifest(payload_) : writerfiles::save(destination_, payload_);
-  if (!saved) { abort("write-failed"); return; }
+  if (!saved) {
+    const std::string reason = std::string("write-failed|") + writerfiles::lastStorageError();
+    abort(reason.c_str());
+    return;
+  }
   changed_ = destination_;
   receiving_ = false;
   payload_.clear();
