@@ -131,6 +131,60 @@ class USB:
             files[parts[1]] = parts[2]
 
     def get(self, name: str) -> tuple[bytes, str]:
+        """Read-only GET2 with one clean retry for a lost ACK/idle timeout.
+
+        No partial response is returned or written to disk: a retry must
+        restart from byte zero and pass full SHA-256 validation.
+        """
+        for attempt in range(2):
+            try:
+                return self._get_once(name)
+            except (RuntimeError, TimeoutError) as exc:
+                detail = str(exc)
+                transient = (
+                    "download-timeout" in detail
+                    or "download-protocol" in detail
+                    or "stalled after" in detail
+                    or "response timed out" in detail
+                )
+                if attempt or not transient:
+                    raise
+                try:
+                    self.reset_download_session()
+                except Exception as reset_exc:
+                    raise RuntimeError(
+                        f"E213 read-only download {name} could not be "
+                        f"restarted after: {detail}. "
+                        f"USB session reset failed: {reset_exc}. "
+                        "No partial document was accepted or uploaded."
+                    ) from exc
+        raise AssertionError("GET2 retry attempts exhausted")
+
+    def reset_download_session(self):
+        """Reset an incomplete in-memory GET2 without touching SD content."""
+        # Drop obsolete responses before asking the firmware to clear the
+        # old GET2. Always issue HELLO; serial buffer clear alone cannot
+        # reset the device's firmware-side transfer state.
+        if hasattr(self.serial, "reset_input_buffer"):
+            self.serial.reset_input_buffer()
+        self.send("HELLO")
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            try:
+                reply = self.next(timeout=min(3, max(1, deadline - time.monotonic())))
+            except TimeoutError:
+                continue
+            except RuntimeError as exc:
+                if "download-timeout" in str(exc):
+                    continue
+                raise
+            if reply == ["READY"]:
+                return
+            # Ignore any response from the cancelled GET2; only READY
+            # establishes a synchronized new request boundary.
+        raise TimeoutError("E213 HELLO reset did not return READY")
+
+    def _get_once(self, name: str) -> tuple[bytes, str]:
         if name != ".sync" and not NAME.fullmatch(name):
             raise ValueError("Invalid E213 filename")
         # Legacy GET streams 272-byte DATA lines without waiting for the host,
