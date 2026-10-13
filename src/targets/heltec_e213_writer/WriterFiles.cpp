@@ -234,6 +234,45 @@ bool save(const std::string& name, const std::string& content) {
   if (!exists(name) && list().size() >= kMaxDocuments) return false;
   return atomicWrite(pathFor(name), content);
 }
+bool renameDraft(const std::string& previous, const std::string& replacement) {
+  if (!ready() || !validName(previous) || !validName(replacement) ||
+      previous == replacement) return false;
+  // FAT32 is case-insensitive: case-only renames require an intermediate name,
+  // so reject them rather than risking overwrites.
+  const auto names = list();
+  const auto fold = [](std::string value) {
+    for (char& c : value)
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    return value;
+  };
+  for (const std::string& name : names) {
+    if (fold(name) == fold(replacement)) return false;
+  }
+  const std::string oldPath = pathFor(previous);
+  const std::string newPath = pathFor(replacement);
+  const std::string oldBackup = oldPath + ".bak";
+  const std::string newBackup = newPath + ".bak";
+  if (!SD.exists(oldPath.c_str()) || SD.exists(newPath.c_str()) ||
+      SD.exists(newBackup.c_str()) || SD.exists((newPath + ".tmp").c_str()))
+    return false;
+  // Read and verify the manuscript before and after moving.
+  std::string contents;
+  if (!read(previous, contents)) return false;
+  if (!SD.rename(oldPath.c_str(), newPath.c_str())) return false;
+  if (!verifySdFile(newPath, contents)) {
+    SD.rename(newPath.c_str(), oldPath.c_str());
+    return false;
+  }
+  // Retain the previous-version backup under the new title. Roll back if
+  // moving the backup failed, so a ghost draft cannot appear in the file list.
+  if (SD.exists(oldBackup.c_str()) &&
+      !SD.rename(oldBackup.c_str(), newBackup.c_str())) {
+    SD.rename(newPath.c_str(), oldPath.c_str());
+    return false;
+  }
+  return true;
+}
+
 bool readActiveName(std::string& name) {
   return readPath("/.active", name, 48) && validName(name);
 }
