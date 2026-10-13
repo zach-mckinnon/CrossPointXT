@@ -100,6 +100,8 @@ int batteryMillivolts = 0;
 uint32_t batteryReadAt = 0;
 bool renderPending = true;
 bool syncWasBusy = false;
+bool usbSyncMode = false;
+bool manualUsbSyncMode = false;
 uint32_t lastKeyboardStatusVersion = 0;
 unsigned long lastEditAt = 0;
 unsigned long lastKeyAt = 0;
@@ -246,7 +248,33 @@ void renderNameEditor() {
   renderPending = false;
 }
 
+void renderUsbSyncScreen() {
+  prepareDisplayFrame();
+  display.setCursor(kTextLeft, writergeometry::kHeaderTop);
+  display.print("USB SYNC // E213");
+  display.drawLine(0, writergeometry::kHeaderDivider,
+                   display.width() - 1, writergeometry::kHeaderDivider, BLACK);
+  display.setCursor(kTextLeft, 25);
+  display.print(storageReady ? "SD: READY" : "SD: NOT AVAILABLE");
+  display.setCursor(kTextLeft, 40);
+  display.print(serialSync.hostActive() ? "LINUX: CONNECTED" : "Waiting for Linux sync app");
+  display.setCursor(kTextLeft, 60);
+  display.print("Open E213 Personal Sync");
+  display.setCursor(kTextLeft, 73);
+  display.print("Select scene / Import to E213");
+  display.setCursor(kTextLeft, 89);
+  display.print("Bluetooth scanning paused");
+  display.drawLine(0, writergeometry::footerDivider(display.height()),
+                   display.width() - 1, writergeometry::footerDivider(display.height()), BLACK);
+  display.setCursor(kTextLeft, writergeometry::footerTop(display.height()));
+  display.print("HOLD B1: EXIT USB SYNC");
+  display.update();
+  lastRenderAt = millis();
+  renderPending = false;
+}
+
 void renderWriter(const bool forceFull = false) {
+  if (usbSyncMode) { renderUsbSyncScreen(); return; }
   if (nameMode != NameMode::None) { renderNameEditor(); return; }
   if (!storageReady) {
     prepareDisplayFrame(forceFull);
@@ -585,6 +613,38 @@ void handleNameKey(const BleWriterKeyboard::KeyEvent& event) {
   lastKeyAt = millis();
 }
 
+void enterUsbSyncMode(bool manual) {
+  if (!storageReady) {
+    Serial.println("USB sync cannot start: SD storage unavailable.");
+    return;
+  }
+  if (dirty && !saveDraft()) {
+    Serial.println("USB sync cannot start: draft could not be saved.");
+    return;
+  }
+  manualUsbSyncMode = manualUsbSyncMode || manual;
+  if (usbSyncMode) return;
+  usbSyncMode = true;
+  fileMenu = false;
+  nameMode = NameMode::None;
+  keyboard.pauseDiscoveryForUsb();
+  Serial.println("E213 USB SYNC READY: connect Linux personal sync app.");
+  renderUsbSyncScreen();
+}
+
+void exitUsbSyncMode() {
+  if (serialSync.busy()) {
+    Serial.println("USB transfer in progress; cannot exit sync mode.");
+    return;
+  }
+  usbSyncMode = false;
+  manualUsbSyncMode = false;
+  keyboard.resumeDiscoveryAfterUsb();
+  Serial.println("E213 USB SYNC EXIT: keyboard scanning resumes.");
+  if (keyboard.isConnected()) renderWriter(true);
+  else renderPairing(true);
+}
+
 void handleKeyboardEvents() {
   BleWriterKeyboard::KeyEvent event;
   while (keyboard.popEvent(event)) {
@@ -678,9 +738,18 @@ void handleKeyboardEvents() {
 void handleButtons() {
   const ButtonEvent next = nextButton.poll();
   const ButtonEvent select = selectButton.poll();
+  if (usbSyncMode) {
+    if (next == ButtonEvent::Long) exitUsbSyncMode();
+    // Never put the E213 to sleep in the middle of a USB sync session.
+    return;
+  }
+  if (next == ButtonEvent::Long) {
+    enterUsbSyncMode(true); // B1 held 1.2 s enters USB transfer mode.
+    return;
+  }
   if (select == ButtonEvent::Long) {
     if (nameMode != NameMode::None) { nameMode = NameMode::None; nameError.clear(); }
-    saveAndSleep(); // Always permit wired B2 save-and-sleep, even without keyboard.
+    saveAndSleep();
     return;
   }
   if (next == ButtonEvent::None && select == ButtonEvent::None) return;
@@ -717,13 +786,7 @@ void handleButtons() {
   }
 
   // No keyboard: wired B1/B2 select and pair keyboards.
-  if (next == ButtonEvent::Long && storageReady) {
-    fileList = writerfiles::list();
-    fileIndex = 0;
-    fileMenu = true;
-    renderFilePicker();
-    return;
-  }
+  // A long B1 press enters USB sync even without a Bluetooth keyboard.
   if (next != ButtonEvent::None) {
     if (keyboard.candidateCount() > 0 && next == ButtonEvent::Short) {
       keyboard.selectNextCandidate();
@@ -800,13 +863,19 @@ void loop() {
       }
     }
   }
+  // A HELLO from Linux automatically enters USB sync mode without a pairing
+  // step. In this mode reconnect attempts cannot monopolize the serial loop.
+  if (serialSync.hostActive() && !usbSyncMode) enterUsbSyncMode(false);
+  if (usbSyncMode && !manualUsbSyncMode && !serialSync.hostActive() &&
+      !serialSync.busy()) exitUsbSyncMode();
   const bool syncBusy = serialSync.busy();
   if (syncBusy != syncWasBusy) {
     syncWasBusy = syncBusy;
     renderPending = true;
   }
   // A synchronous reconnect must not block while a wired button is being held.
-  if (digitalRead(kNextButton) != LOW && digitalRead(kSelectButton) != LOW)
+  if (!usbSyncMode &&
+      digitalRead(kNextButton) != LOW && digitalRead(kSelectButton) != LOW)
     keyboard.update();
   handleButtons();
 
@@ -842,6 +911,7 @@ void loop() {
   const uint32_t statusVersion = keyboard.statusVersion();
   if (statusVersion != lastKeyboardStatusVersion) {
     lastKeyboardStatusVersion = statusVersion;
+    if (usbSyncMode) { delay(5); return; }
     if (!keyboard.isConnected() && millis() - lastPairingRenderAt >= kPairingRefreshMs) {
       renderPairing();
     } else if (keyboard.isConnected()) {
