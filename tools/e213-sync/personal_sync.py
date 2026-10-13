@@ -471,9 +471,12 @@ class PersonalSyncApp:
             row=1, column=3, padx=(8, 0))
         ttk.Label(mapping, text="No documents on the E213 yet?").grid(
             row=2, column=0, sticky="w", pady=(10, 0))
-        ttk.Button(mapping, text="Import selected Plot n Jot scene to E213",
+        ttk.Button(mapping, text="Import one scene",
                    command=self.import_selected_scene).grid(
-                       row=2, column=1, columnspan=3, sticky="w", padx=(12, 0), pady=(10, 0))
+                       row=2, column=1, sticky="w", padx=(12, 0), pady=(10, 0))
+        ttk.Button(mapping, text="Import multiple scenes…",
+                   command=self.open_multi_import).grid(
+                       row=2, column=2, columnspan=2, sticky="w", padx=(12, 0), pady=(10, 0))
 
         actions = ttk.Frame(outer)
         actions.grid(row=9, column=0, columnspan=3, sticky="w", pady=(4, 10))
@@ -604,6 +607,82 @@ class PersonalSyncApp:
             self.preview_key = None
             self.status.set(f"Found {len(files)} E213 document(s).")
         self._run("Reading SD drafts and links…", lambda: snapshot(*args), done)
+
+    def open_multi_import(self):
+        args = self._args_or_message()
+        if not args:
+            return
+        if not self.scenes:
+            messagebox.showinfo(
+                "Import scenes", "This project has no scenes to import yet."
+            )
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Import Plot n Jot scenes to E213")
+        dialog.geometry("620x490")
+        dialog.minsize(460, 350)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        holder = ttk.Frame(dialog, padding=14)
+        holder.pack(fill="both", expand=True)
+        ttk.Label(holder, text="Choose scenes to copy onto the E213",
+                  font=("", 13, "bold")).pack(anchor="w")
+        ttk.Label(holder, text="Ctrl/Shift-click to select multiple; or use Select all. "
+                  "Already-linked scenes are skipped.").pack(anchor="w", pady=(5, 10))
+        area = ttk.Frame(holder)
+        area.pack(fill="both", expand=True)
+        chosen = tk.Listbox(area, selectmode="extended", exportselection=False)
+        bar = ttk.Scrollbar(area, orient="vertical", command=chosen.yview)
+        chosen.configure(yscrollcommand=bar.set)
+        for scene_id, label in self.scenes:
+            chosen.insert("end", f"{label}  (#{scene_id})")
+        chosen.pack(side="left", fill="both", expand=True)
+        bar.pack(side="right", fill="y")
+        selected = self.scene_box.current()
+        if selected >= 0:
+            chosen.selection_set(selected)
+            chosen.see(selected)
+        buttons = ttk.Frame(holder)
+        buttons.pack(fill="x", pady=(12, 0))
+        ttk.Button(buttons, text="Select all",
+                   command=lambda: chosen.selection_set(0, "end")).pack(side="left")
+        ttk.Button(buttons, text="Clear",
+                   command=lambda: chosen.selection_clear(0, "end")).pack(side="left", padx=8)
+
+        def start():
+            ids = [self.scenes[int(i)][0] for i in chosen.curselection()]
+            if not ids:
+                messagebox.showinfo("Import scenes", "Select at least one scene.", parent=dialog)
+                return
+            if not messagebox.askyesno(
+                "Import selected scenes",
+                f"Copy {len(ids)} Plot n Jot scenes onto the E213 SD card?\n\n"
+                "Each document gets a separate .txt file and an exact scene link.\n"
+                "Existing drafts are never overwritten. Identical orphaned "
+                "copies can be relinked automatically.\n\n"
+                "A backup is made first. Keep the writer in USB SYNC mode "
+                "and close Plot n Jot during the transfer.",
+                parent=dialog
+            ):
+                return
+            dialog.grab_release()
+            dialog.destroy()
+
+            def done(report):
+                self._write(report)
+                self.status.set("Import finished. Review details and rescan E213.")
+                self.preview_key = None
+                self.scan()
+
+            self._run(
+                f"Importing {len(ids)} scenes over USB…",
+                lambda: import_scenes(*args, ids), done
+            )
+
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right")
+        ttk.Button(buttons, text="Import selected",
+                   command=start).pack(side="right", padx=8)
 
     def import_selected_scene(self):
         args = self._args_or_message()
