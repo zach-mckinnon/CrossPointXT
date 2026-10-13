@@ -65,11 +65,31 @@ class USB:
         except ImportError as exc:
             raise RuntimeError("Install serial support: python -m pip install pyserial") from exc
         self.serial = serial.Serial(port, 115200, timeout=1, write_timeout=10)
-        # Serial attach can reset an ESP32-S3. Skip startup diagnostics.
-        time.sleep(2)
-        self.send("HELLO")
-        if self.next() != ["READY"]:
-            raise RuntimeError("E213 microSD sync not available (check external card and SPI wiring)")
+        # Opening native ESP32 USB CDC can reset the E213 while the e-ink panel
+        # and BLE stack initialize. Never depend on one HELLO after a fixed
+        # two-second delay: retry the idempotent handshake until firmware replies.
+        # A USB sync session pauses keyboard discovery on the writer.
+        try:
+            deadline = time.monotonic() + 55
+            while time.monotonic() < deadline:
+                self.send("HELLO")
+                try:
+                    reply = self.next(timeout=min(4, max(1, deadline - time.monotonic())))
+                except TimeoutError:
+                    continue
+                if reply == ["READY"]:
+                    break
+                raise RuntimeError("E213 responded with an unsupported USB sync protocol")
+            else:
+                raise TimeoutError(
+                    "E213 did not answer USB HELLO after repeated attempts. "
+                    "Hold external B1 for 1.2 seconds to enter USB SYNC on the "
+                    "writer; check that USB data (not just power) works and that "
+                    "the correct serial port is selected. Close serial monitors."
+                )
+        except Exception:
+            self.serial.close()
+            raise
 
     def close(self):
         self.serial.close()
