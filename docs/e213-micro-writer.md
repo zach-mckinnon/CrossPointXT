@@ -149,6 +149,19 @@ If there is no reply, verify the selected serial port, a USB data cable, and
 the physical SD card; the GUI reports an actionable error instead of silently
 continuing.
 
+**For `0/N bytes acknowledged` on the first DATA chunk:** the older host
+sent 192 raw bytes per USB DATA command. Base64 expands each to 256 text
+bytes, making a **272-byte framed USB write**; on some ESP32-S3 CDC receive
+queues, that frame can exceed the available RX capacity and be truncated
+before its terminating newline. With no complete frame, the E213 gives no
+ACK, and then times out. The Linux host now sends only **24 binary bytes
+per DATA chunk**, creating at most a **48-byte framed USB message**, and
+waits for an ACK after each one. This is a host-only compatibility change:
+pull latest `dev`, close and reopen the personal Linux sync app, and
+retry after **Scan E213**. The writer does not need to be reflashed
+*specifically* for the smaller host packets. Existing identical orphaned
+drafts can be relinked safely.
+
 **If you see `E213 refused command: timeout`:** this is the firmware's
 incoming PUT inactivity timer, not an initial USB/Bluetooth discovery failure.
 Previously it expired after 15 seconds and checked before draining buffered
