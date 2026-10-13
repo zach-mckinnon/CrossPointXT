@@ -77,6 +77,13 @@ class USB:
                     reply = self.next(timeout=min(4, max(1, deadline - time.monotonic())))
                 except TimeoutError:
                     continue
+                except RuntimeError as exc:
+                    # A previous connection may have left an uncommitted PUT
+                    # open. Its delayed timeout must not poison the next
+                    # idempotent HELLO handshake.
+                    if str(exc) == "E213 refused command: timeout":
+                        continue
+                    raise
                 if reply == ["READY"]:
                     break
                 raise RuntimeError("E213 responded with an unsupported USB sync protocol")
@@ -154,16 +161,29 @@ class USB:
             raise ValueError("File too large for E213")
         if expected != "*" and not HASH.fullmatch(expected):
             raise ValueError("Invalid expected revision")
-        self.send("PUT", name, expected, str(len(data)))
-        if self.next() != ["READY"]:
-            raise RuntimeError("E213 refused PUT")
-        for offset in range(0, len(data), 192):
-            self.send("DATA", base64.b64encode(data[offset:offset+192]).decode("ascii"))
-            if self.next() != ["ACK"]:
-                raise RuntimeError("E213 did not acknowledge data chunk")
-        self.send("END")
-        if self.next(timeout=60) != ["SAVED"]:
-            raise RuntimeError("E213 did not confirm saved data")
+        phase = "start"
+        sent = 0
+        try:
+            self.send("PUT", name, expected, str(len(data)))
+            if self.next(timeout=65) != ["READY"]:
+                raise RuntimeError("E213 refused PUT")
+            for offset in range(0, len(data), 192):
+                phase = "data"
+                self.send("DATA", base64.b64encode(data[offset:offset+192]).decode("ascii"))
+                if self.next(timeout=65) != ["ACK"]:
+                    raise RuntimeError("E213 did not acknowledge data chunk")
+                sent = min(len(data), offset + 192)
+            phase = "commit"
+            self.send("END")
+            if self.next(timeout=65) != ["SAVED"]:
+                raise RuntimeError("E213 did not confirm saved data")
+        except (TimeoutError, RuntimeError, OSError) as exc:
+            raise RuntimeError(
+                f"E213 upload {name} failed during {phase} "
+                f"({sent}/{len(data)} bytes acknowledged): {exc}. "
+                "The previous file and any earlier completed imports remain "
+                "protected. Rescan before retrying."
+            ) from exc
 
 
 def get_manifest(usb: USB, project_id: int, name: str) -> tuple[dict, str]:
