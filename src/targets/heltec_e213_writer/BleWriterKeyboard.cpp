@@ -407,6 +407,7 @@ void BleWriterKeyboard::handleReport(const uint8_t* data, size_t length) {
     if (ctrl) {
       if (keyCode == 0x12) pushEvent(KeyEvent{KeyType::OpenFiles}); // Ctrl+O
       if (keyCode == 0x11) pushEvent(KeyEvent{KeyType::NewFile}); // Ctrl+N
+      if (keyCode == 0x15) pushEvent(KeyEvent{KeyType::RenameFile}); // Ctrl+R
       if (keyCode == 0x16) pushEvent(KeyEvent{KeyType::SaveFile}); // Ctrl+S
       if (keyCode == 0x1D) pushEvent(KeyEvent{KeyType::Undo}); // Ctrl+Z
       if (keyCode == 0x1C) pushEvent(KeyEvent{KeyType::Redo}); // Ctrl+Y
