@@ -113,6 +113,34 @@ Replace COM10 with your actual E213 port. Close the serial monitor before sync.
 - Reboot restores the last document via SD /.active
 - A failed save blocks switching documents; never silently fall back to flash
 
+## Plot n Jot chapter/scene hierarchy on the E213
+
+The E213 picker no longer alphabetizes linked scene filenames. Plot n Jot's
+existing chapter/scene position order is stored in an optional `chapters`
+section of the E213 SD card's `/.sync` metadata file (no renaming or
+reorganizing physical SD files). When this data exists, use **Ctrl+O**
+to open **CHAPTERS**, use the up/down keys to choose a chapter, then Enter
+to browse its scenes in Plot n Jot order. Press Esc to return to chapters
+and Esc again to exit. The external B1 (next), B2 (select), and long B1
+(back) provide the same navigation without a keyboard.
+
+**Local drafts** appears after the ordered chapters for any unlinked TXT
+documents, including previous Draft-NNN files. If no Plot n Jot outline
+exists, the old flat filename picker remains available.
+
+The personal Linux E213 Sync window writes/refreshes order automatically
+when importing or linking scenes and after a confirmed Sync now. To update
+files already imported before this feature without reimporting or overwriting
+anything, use **Refresh chapter order**. It backs up the SD and updates
+only display metadata in `/.sync`; it does not modify manuscript text or
+Plot n Jot. The file browser reads it when you next open Ctrl+O. Reordering
+chapters or scenes in Plot n Jot can be reflected by clicking the same
+Refresh chapter order button.
+
+Both the E213 firmware and the personal Linux app must be updated from
+CrossPointXT `dev` for this browser change. Plot n Jot's public release
+remains untouched.
+
 ## First-time transfer: Plot n Jot to a blank E213
 
 **Plot n Jot itself does not install on the micro-writer.** The E213 runs its
