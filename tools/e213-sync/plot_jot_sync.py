@@ -59,6 +59,85 @@ def validate_manifest(manifest: dict, project_id: int) -> None:
             raise ValueError(f"Invalid binding for {filename}")
 
 
+def validate_store(store: dict) -> None:
+    """Validate all project links, including global filename ownership."""
+    if not isinstance(store, dict) or store.get("provider") != "plot-and-jot":
+        raise ValueError("Unsupported sync provider")
+    if store.get("version") == 1:
+        validate_manifest(store, store.get("project_id"))
+        return
+    if store.get("version") != 2 or not isinstance(store.get("projects"), list):
+        raise ValueError("Unsupported .sync manifest version")
+    if not store["projects"]:
+        raise ValueError("Multi-project manifest needs projects")
+    used_ids, used_names = set(), set()
+    for project in store["projects"]:
+        if not isinstance(project, dict):
+            raise ValueError("Invalid project in .sync manifest")
+        project_id = project.get("project_id")
+        if type(project_id) is not int or project_id <= 0 or project_id in used_ids:
+            raise ValueError("Duplicate or invalid project ID in .sync")
+        used_ids.add(project_id)
+        view = dict(project, version=1, provider="plot-and-jot")
+        validate_manifest(view, project_id)
+        if not isinstance(project.get("project_name", ""), str):
+            raise ValueError("Invalid project name in .sync")
+        for filename in project["scenes"]:
+            folded = filename.casefold()
+            if folded in used_names:
+                raise ValueError(
+                    f"Document {filename} is linked to multiple projects; refusing")
+            used_names.add(folded)
+        chapters = project.get("chapters", [])
+        if not isinstance(chapters, list):
+            raise ValueError("Invalid project chapter outline")
+        seen = set()
+        for chapter in chapters:
+            if (not isinstance(chapter, dict)
+                    or not isinstance(chapter.get("title"), str)
+                    or not isinstance(chapter.get("files"), list)):
+                raise ValueError("Invalid chapter metadata")
+            for filename in chapter["files"]:
+                if not isinstance(filename, str) or filename not in project["scenes"]:
+                    raise ValueError("Chapter references an unlinked document")
+                if filename in seen:
+                    raise ValueError("A scene appears twice in the outline")
+                seen.add(filename)
+
+
+def manifest_payload(manifest: dict) -> bytes:
+    """Encode selected project plus untouched others, without internal keys."""
+    validate_manifest(manifest, manifest["project_id"])
+    current = {k: manifest[k] for k in (
+        "project_id", "project_name", "scenes", "chapters"
+    ) if k in manifest}
+    others = manifest.get("_all_projects")
+    if others is None:
+        # Keep the original v1 on-disk format until another project is added.
+        store = dict(current, version=1, provider="plot-and-jot")
+    else:
+        projects = [dict(p) for p in others
+                    if p.get("project_id") != current["project_id"]]
+        projects.append(current)
+        store = {"version": 2, "provider": "plot-and-jot", "projects": projects}
+    validate_store(store)
+    content = json.dumps(store, ensure_ascii=False, indent=2).encode("utf-8")
+    if len(content) > MAX_MANIFEST:
+        raise ValueError(
+            f"Combined project index exceeds E213's {MAX_MANIFEST}-byte limit. "
+            "No document or manifest was modified."
+        )
+    return content
+
+
+def all_linked_filenames(manifest: dict) -> set[str]:
+    """All filenames owned by ANY project, for cross-project collision safety."""
+    names = set(manifest.get("scenes", {}))
+    for project in manifest.get("_all_projects", []):
+        names.update(project.get("scenes", {}))
+    return {name.casefold() for name in names}
+
+
 class USB:
     def __init__(self, port: str):
         try:
@@ -346,24 +425,38 @@ class USB:
 
 
 def get_manifest(usb: USB, project_id: int, name: str) -> tuple[dict, str]:
+    """Return one project's view, retaining all other project bindings."""
+    current = {
+        "version": 1, "provider": "plot-and-jot",
+        "project_id": project_id, "project_name": name, "scenes": {}
+    }
     try:
         data, revision = usb.get(".sync")
     except RuntimeError as err:
         if "not-found" not in str(err):
             raise
-        return {
-            "version": 1, "provider": "plot-and-jot",
-            "project_id": project_id, "project_name": name, "scenes": {}
-        }, "*"
-    manifest = json.loads(data.decode("utf-8"))
-    validate_manifest(manifest, project_id)
-    return manifest, revision
+        return current, "*"
+    store = json.loads(data.decode("utf-8"))
+    validate_store(store)
+    if store["version"] == 1:
+        if store["project_id"] == project_id:
+            return store, revision
+        # Adding a second project migrates the index only at PUT. The first
+        # project's scene IDs, original filename links, and revisions remain.
+        current["_all_projects"] = [{
+            k: store[k] for k in ("project_id", "project_name", "scenes", "chapters")
+            if k in store
+        }]
+        return current, revision
+    projects = store["projects"]
+    selected = next((p for p in projects if p["project_id"] == project_id), current)
+    current.update(selected)
+    current["_all_projects"] = projects
+    return current, revision
 
 
 def put_manifest(usb: USB, manifest: dict, previous: str):
-    validate_manifest(manifest, manifest["project_id"])
-    data = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
-    usb.put(".sync", data, previous)
+    usb.put(".sync", manifest_payload(manifest), previous)
 
 
 def db_scene(db, project_id: int, scene_id: int, chapter_id: int | None = None):
