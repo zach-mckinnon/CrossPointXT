@@ -24,4 +24,6 @@ bool readActiveName(std::string& name);
 bool saveActiveName(const std::string& name);
 bool readManifest(std::string& content);
 bool saveManifest(const std::string& content);
+// Diagnostic reason for the most recent failed SD metadata write.
+const char* lastStorageError();
 }
