@@ -136,6 +136,18 @@ void WriterSyncSerial::onLine(const std::string& line) {
     return;
   }
   if (receiving_) {
+    // An interrupted upload leaves a partial in-RAM buffer. A newly opened
+    // desktop app needs to be able to handshake again, even before the upload
+    // inactivity deadline. Discard only the uncommitted partial buffer.
+    if (args[0] == "HELLO" && args.size() == 1) {
+      receiving_ = false;
+      payload_.clear();
+      destination_.clear();
+      expected_.clear();
+      expectedLength_ = 0;
+      emit("READY");
+      return;
+    }
     if (args[0] == "END") { finishPut(); return; }
     if (args.size() != 2 || args[0] != "DATA") { abort("bad-chunk"); return; }
     unsigned char decoded[256] = {};
@@ -170,7 +182,9 @@ void WriterSyncSerial::onLine(const std::string& line) {
 }
 
 void WriterSyncSerial::poll() {
-  if (receiving_ && millis() - lastChunkAt_ > 15000) abort("timeout");
+  // Drain pending USB data BEFORE testing the inactivity timer. Screen/SD
+  // operations can temporarily stall loop(), but already buffered data is
+  // still valid progress and must not be discarded as an idle upload.
   while (Serial.available()) {
     const char c = static_cast<char>(Serial.read());
     if (c == '\n') {
@@ -184,6 +198,11 @@ void WriterSyncSerial::poll() {
       } else incoming_ += c;
     }
   }
+  // Be tolerant of an e-ink refresh or slow Linux USB scheduler. The host
+  // waits for one ACK per chunk. This deadline only applies to an incomplete
+  // transfer with no incoming DATA, not to the total time for a large scene.
+  if (receiving_ && millis() - lastChunkAt_ > 60000UL)
+    abort("timeout");
 }
 std::string WriterSyncSerial::takeUpdatedName() {
   std::string name;
