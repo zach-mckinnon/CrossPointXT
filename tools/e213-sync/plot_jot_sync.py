@@ -184,7 +184,15 @@ class USB:
             except TimeoutError:
                 continue
             except RuntimeError as exc:
-                if "download-timeout" in str(exc):
+                # A delayed ACK from the timed-out transfer may have
+                # been parsed after the device cleared its GET2 state.
+                # In that state the firmware returns unknown-command
+                # to the old ACK, then replies READY to our HELLO.
+                # Ignore only these stale reset-window errors.
+                if any(code in str(exc) for code in (
+                    "download-timeout", "unknown-command",
+                    "unexpected-ack", "download-protocol",
+                )):
                     continue
                 raise
             if reply == ["READY"]:
