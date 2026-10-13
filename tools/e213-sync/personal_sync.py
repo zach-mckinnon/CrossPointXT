@@ -270,7 +270,16 @@ def import_scenes(port: str, source: str, database: str, project_id: int,
             # For the normal first import, use the scene title. If several
             # different scenes share a title, suffix the scene ID safely.
             filename = suggested
-            if filename.casefold() in reserved:
+            # Many manuscripts have "Scene 1" in several chapters. Keep each
+            # scene distinct even when imported in a *later* batch, not just
+            # when titles collide during this one batch. Filenames are stable
+            # once linked; we never rename a user's existing document.
+            taken_linked = any(
+                saved.casefold() == filename.casefold()
+                and saved in manifest["scenes"]
+                for saved in available
+            )
+            if filename.casefold() in reserved or taken_linked:
                 stem = suggested[:-4]
                 suffix = f" - {scene_id}"
                 filename = f"{stem[:44-len(suffix)].rstrip()}{suffix}.txt"
