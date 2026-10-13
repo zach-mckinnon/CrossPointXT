@@ -51,6 +51,8 @@ class BleWriterKeyboard {
   void begin();
   bool end();
   void update();
+  void pauseDiscoveryForUsb();
+  void resumeDiscoveryAfterUsb();
   bool isConnected() const { return connected.load(); }
   bool isScanning() const { return scanning; }
   bool isConnecting() const { return connecting || reconnectPending; }
@@ -99,6 +101,7 @@ class BleWriterKeyboard {
   KeyboardReconnect reconnect;
   bool reconnectPending = false;
   bool automaticAttempt = false;
+  bool usbDiscoveryPaused = false;
 
   Candidate candidates[kMaxCandidates];
   int candidateTotal = 0;
