@@ -15,6 +15,7 @@
 #include "WriterEditing.h"
 #include "BatteryStatus.h"
 #include "WriterNames.h"
+#include "WriterOutline.h"
 #include "SyncManifest.h"
 
 // E213 writer bring-up:
@@ -83,8 +84,11 @@ Button selectButton{kSelectButton};
 std::string document;
 std::string activeName = "Draft-001.txt";
 std::vector<std::string> fileList;
+std::vector<writeroutline::Section> fileSections;
 size_t fileIndex = 0;
+size_t sectionIndex = 0;
 bool fileMenu = false;
+bool chapterMenu = false;
 enum class NameMode { None, Create, Rename };
 NameMode nameMode = NameMode::None;
 std::string nameInput;
@@ -195,23 +199,94 @@ void renderPairing(const bool forceFull = false) {
   lastPairingRenderAt = lastRenderAt;
 }
 
+// Prefer Plot n Jot's persisted chapter/scene order; fallback to the original
+// flat alphabetical picker for standalone drafts or older .sync manifests.
+void openFileBrowser() {
+  fileList = writerfiles::list();
+  fileSections.clear();
+  sectionIndex = 0;
+  chapterMenu = false;
+  std::string json;
+  if (writerfiles::readManifest(json)) {
+    JsonDocument doc;
+    if (deserializeJson(doc, json) == DeserializationError::Ok &&
+        doc["chapters"].is<JsonArray>()) {
+      std::vector<writeroutline::Section> outline;
+      for (JsonObject chapter : doc["chapters"].as<JsonArray>()) {
+        writeroutline::Section group;
+        const char* title = chapter["title"] | "";
+        group.title = title;
+        for (JsonVariant entry : chapter["files"].as<JsonArray>()) {
+          const char* name = entry.as<const char*>();
+          if (name && writerfiles::validName(name)) group.files.push_back(name);
+        }
+        if (!group.files.empty()) outline.push_back(group);
+      }
+      if (!outline.empty()) {
+        fileSections = writeroutline::organize(fileList, outline);
+        chapterMenu = !fileSections.empty();
+        for (size_t i = 0; i < fileSections.size(); ++i) {
+          const auto& files = fileSections[i].files;
+          if (std::find(files.begin(), files.end(), activeName) != files.end()) {
+            sectionIndex = i;
+            break;
+          }
+        }
+      }
+    }
+  }
+  auto found = std::find(fileList.begin(), fileList.end(), activeName);
+  fileIndex = found != fileList.end()
+      ? static_cast<size_t>(found - fileList.begin()) : 0;
+  fileMenu = true;
+  renderPending = true;
+}
+
+void enterSelectedChapter() {
+  if (sectionIndex >= fileSections.size()) return;
+  fileList = fileSections[sectionIndex].files;
+  auto found = std::find(fileList.begin(), fileList.end(), activeName);
+  fileIndex = found != fileList.end()
+      ? static_cast<size_t>(found - fileList.begin()) : 0;
+  chapterMenu = false;
+  renderPending = true;
+}
+
+void leaveFileBrowserLevel() {
+  if (!chapterMenu && !fileSections.empty()) chapterMenu = true;
+  else { fileMenu = false; chapterMenu = false; }
+  renderPending = true;
+}
+
 void renderFilePicker() {
+  const size_t total = chapterMenu ? fileSections.size() : fileList.size();
+  const size_t selected = chapterMenu ? sectionIndex : fileIndex;
   prepareDisplayFrame();
   display.setCursor(kTextLeft, writergeometry::kHeaderTop);
-  display.print("FILES  ENTER:OPEN  ESC:BACK");
+  if (chapterMenu) display.print("CHAPTERS   ENTER:OPEN");
+  else if (!fileSections.empty()) display.print(cropped(fileSections[sectionIndex].title, 32).c_str());
+  else display.print("FILES  ENTER:OPEN  ESC:BACK");
   display.drawLine(0, writergeometry::kHeaderDivider,
                    display.width() - 1, writergeometry::kHeaderDivider, BLACK);
-  const size_t first = fileIndex >= 6 ? fileIndex - 6 : 0;
-  for (size_t row = 0; row < 8 && first + row < fileList.size(); ++row) {
+  const size_t first = selected >= 6 ? selected - 6 : 0;
+  for (size_t row = 0; row < 8 && first + row < total; ++row) {
     const size_t i = first + row;
     display.setCursor(kTextLeft, writergeometry::fileRowTop(static_cast<int>(row)));
-    display.print(i == fileIndex ? "> " : "  ");
-    display.print(cropped(fileList[i], 34).c_str());
+    display.print(i == selected ? "> " : "  ");
+    if (chapterMenu) {
+      display.print(cropped(fileSections[i].title, 28).c_str());
+      display.print(" (");
+      display.print(fileSections[i].files.size());
+      display.print(")");
+    } else {
+      display.print(cropped(fileList[i], 34).c_str());
+    }
   }
   display.drawLine(0, writergeometry::footerDivider(display.height()),
                    display.width() - 1, writergeometry::footerDivider(display.height()), BLACK);
   display.setCursor(kTextLeft, writergeometry::footerTop(display.height()));
-  display.print("Ctrl+N: NEW   Ctrl+O: TOGGLE");
+  display.print(chapterMenu ? "ENTER: SCENES  ESC: BACK"
+                            : "ENTER: OPEN  ESC: BACK");
   display.update();
   renderPending = false;
   lastRenderAt = millis();
@@ -516,7 +591,8 @@ void beginNameEditor(NameMode mode) {
     Serial.println("Cannot edit title while document save is failing");
     return;
   }
-  renameSource = (mode == NameMode::Rename && fileMenu && fileIndex < fileList.size())
+  renameSource = (mode == NameMode::Rename && fileMenu && !chapterMenu &&
+                  fileIndex < fileList.size())
       ? fileList[fileIndex] : activeName;
   nameInput = mode == NameMode::Rename ? writernames::stem(renameSource) : "";
   nameError.clear();
@@ -574,9 +650,7 @@ void confirmNameEditor() {
       if (!writerfiles::saveActiveName(newName))
         Serial.println("Renamed draft; active preference could not be saved");
     }
-    fileList = writerfiles::list();
-    auto found = std::find(fileList.begin(), fileList.end(), newName);
-    fileIndex = found != fileList.end() ? static_cast<size_t>(found - fileList.begin()) : 0;
+    if (fileMenu) openFileBrowser();  // File now belongs to Local drafts if unlinked.
   }
   Serial.printf("SD manuscript title saved: %s\n", newName.c_str());
   nameMode = NameMode::None;
@@ -661,7 +735,7 @@ void handleKeyboardEvents() {
       continue;
     }
     if (event.type == BleWriterKeyboard::KeyType::RenameFile) {
-      beginNameEditor(NameMode::Rename);
+      if (!fileMenu || !chapterMenu) beginNameEditor(NameMode::Rename);
       continue;
     }
     if (event.type == BleWriterKeyboard::KeyType::OpenFiles) {
@@ -669,10 +743,8 @@ void handleKeyboardEvents() {
         Serial.println("Cannot open file picker: autosave failed");
         continue;
       }
-      fileMenu = !fileMenu;
-      fileList = writerfiles::list();
-      const auto found = std::find(fileList.begin(), fileList.end(), activeName);
-      fileIndex = found != fileList.end() ? static_cast<size_t>(found - fileList.begin()) : 0;
+      if (fileMenu) { fileMenu = false; chapterMenu = false; }
+      else openFileBrowser();
       renderPending = true;
       lastKeyAt = millis();
       continue;
@@ -689,17 +761,22 @@ void handleKeyboardEvents() {
     if (fileMenu) {
       switch (event.type) {
         case BleWriterKeyboard::KeyType::Up:
-          if (fileIndex > 0) --fileIndex;
+          if (chapterMenu) {
+            if (sectionIndex > 0) --sectionIndex;
+          } else if (fileIndex > 0) --fileIndex;
           break;
         case BleWriterKeyboard::KeyType::Down:
-          if (fileIndex + 1 < fileList.size()) ++fileIndex;
+          if (chapterMenu) {
+            if (sectionIndex + 1 < fileSections.size()) ++sectionIndex;
+          } else if (fileIndex + 1 < fileList.size()) ++fileIndex;
           break;
         case BleWriterKeyboard::KeyType::Enter:
-          if (fileIndex < fileList.size() && !switchDraft(fileList[fileIndex]))
+          if (chapterMenu) enterSelectedChapter();
+          else if (fileIndex < fileList.size() && !switchDraft(fileList[fileIndex]))
             Serial.println("Open failed; current draft preserved");
           break;
         case BleWriterKeyboard::KeyType::Escape:
-          fileMenu = false;
+          leaveFileBrowserLevel();
           break;
         default:
           break;
@@ -746,8 +823,9 @@ void handleButtons() {
   }
   if (next == ButtonEvent::Long) {
     if (fileMenu) {
-      fileMenu = false; // Preserve the original B1-long file-picker exit.
-      if (keyboard.isConnected()) renderWriter();
+      leaveFileBrowserLevel();
+      if (fileMenu) renderFilePicker();
+      else if (keyboard.isConnected()) renderWriter();
       else renderPairing();
     } else {
       enterUsbSyncMode(true); // B1 held 1.2 s enters USB transfer mode.
@@ -764,13 +842,17 @@ void handleButtons() {
 
   if (fileMenu) {
     if (next == ButtonEvent::Long) {
-      fileMenu = false;
+      leaveFileBrowserLevel();
     } else if (next == ButtonEvent::Short) {
-      if (!fileList.empty()) fileIndex = (fileIndex + 1) % fileList.size();
-    } else if (select == ButtonEvent::Short && fileIndex < fileList.size()) {
-      if (!switchDraft(fileList[fileIndex])) {
-        Serial.println("Cannot open file from button: save/read failed");
+      if (chapterMenu && !fileSections.empty()) {
+        sectionIndex = (sectionIndex + 1) % fileSections.size();
+      } else if (!fileList.empty()) {
+        fileIndex = (fileIndex + 1) % fileList.size();
       }
+    } else if (select == ButtonEvent::Short) {
+      if (chapterMenu) enterSelectedChapter();
+      else if (fileIndex < fileList.size() && !switchDraft(fileList[fileIndex]))
+        Serial.println("Cannot open file from button: save/read failed");
     }
     renderPending = true;
     lastKeyAt = millis();
@@ -780,11 +862,7 @@ void handleButtons() {
   if (keyboard.isConnected()) {
     if (next == ButtonEvent::Short || next == ButtonEvent::Long) {
       if (dirty && !saveDraft()) return;
-      fileList = writerfiles::list();
-      const auto found = std::find(fileList.begin(), fileList.end(), activeName);
-      fileIndex = found != fileList.end() ?
-          static_cast<size_t>(found - fileList.begin()) : 0;
-      fileMenu = true;
+      openFileBrowser();
       renderPending = true;
     } else if (select == ButtonEvent::Short && !saveDraft()) {
       Serial.println("B2 save failed");
