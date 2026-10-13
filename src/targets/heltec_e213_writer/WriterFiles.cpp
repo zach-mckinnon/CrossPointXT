@@ -25,6 +25,7 @@ constexpr char kImportMarker[] = "/.flash-imported";
 SPIClass sdSpi(FSPI);
 bool mounted = false;
 bool migrationBlocked = false; // Block USB on an incomplete legacy import.
+const char* lastError = "none";
 
 std::string pathFor(const std::string& name) { return std::string(kDraftDir) + "/" + name; }
 
@@ -56,17 +57,19 @@ bool verifySdFile(const std::string& path, const std::string& expected) {
 // Write to the SD temp file first and keep the last version on the SD as .bak.
 // Internal flash is never the destination of a manuscript or sync metadata.
 bool atomicWrite(const std::string& path, const std::string& content) {
-  if (!mounted) return false;
+  lastError = "none";
+  if (!mounted) { lastError = "sd-not-mounted"; return false; }
   const std::string temp = path + ".tmp";
   const std::string backup = path + ".bak";
   SD.remove(temp.c_str());
   File file = SD.open(temp.c_str(), "w");
-  if (!file) return false;
+  if (!file) { lastError = "temp-file-open-failed"; return false; }
   const size_t written = file.write(
       reinterpret_cast<const uint8_t*>(content.data()), content.size());
   file.flush();
   file.close();
   if (written != content.size() || !verifySdFile(temp, content)) {
+    lastError = "temp-file-write-or-readback-failed";
     Serial.printf("SD verification failed for %s; original preserved.\n", path.c_str());
     SD.remove(temp.c_str());
     return false;
@@ -74,15 +77,20 @@ bool atomicWrite(const std::string& path, const std::string& content) {
   if (SD.exists(path.c_str())) {
     // Renaming the original creates a recovery point before the new file appears.
     SD.remove(backup.c_str());
-    if (!SD.rename(path.c_str(), backup.c_str())) return false;
+    if (!SD.rename(path.c_str(), backup.c_str())) {
+      lastError = "existing-file-backup-rename-failed";
+      return false;
+    }
   }
   if (!SD.rename(temp.c_str(), path.c_str())) {
+    lastError = "temp-file-final-rename-failed";
     if (SD.exists(backup.c_str()) && !SD.exists(path.c_str()))
       SD.rename(backup.c_str(), path.c_str());
     return false;
   }
   // A successful rename is not proof that an unreliable SD card retained bytes.
   if (!verifySdFile(path, content)) {
+    lastError = "final-file-readback-failed";
     Serial.printf("SD final readback failed for %s; restoring prior version.\n",
                   path.c_str());
     if (SD.exists(backup.c_str())) {
@@ -283,8 +291,10 @@ bool readManifest(std::string& content) {
   return readPath("/.sync", content, 16384);
 }
 bool saveManifest(const std::string& content) {
-  return content.size() <= 16384 && atomicWrite("/.sync", content);
+  if (content.size() > 16384) { lastError = "manifest-exceeds-16KiB"; return false; }
+  return atomicWrite("/.sync", content);
 }
+const char* lastStorageError() { return lastError; }
 
 bool importLegacyFlashDrafts() {
   if (!mounted) return false;
