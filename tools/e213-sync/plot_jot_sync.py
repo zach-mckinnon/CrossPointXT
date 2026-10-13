@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import datetime as dt
 import hashlib
 import json
@@ -132,26 +133,70 @@ class USB:
     def get(self, name: str) -> tuple[bytes, str]:
         if name != ".sync" and not NAME.fullmatch(name):
             raise ValueError("Invalid E213 filename")
-        self.send("GET", name)
-        first = self.next()
-        if len(first) != 3 or first[0] != "BEGIN":
-            raise RuntimeError("Unexpected GET response")
-        length = int(first[1])
-        if length > (MAX_MANIFEST if name == ".sync" else MAX_FILE):
-            raise ValueError("Excessive file length")
+        # Legacy GET streams 272-byte DATA lines without waiting for the host,
+        # overflowing some ESP32-S3 CDC queues. GET2 sends one 48-byte DATA
+        # line only after the host ACKs each previous line. It requires the
+        # matching E213 firmware; don't silently fall back to corrupt GET.
+        self.send("GET2", name)
+        try:
+            first = self.next()
+        except RuntimeError as exc:
+            if "unknown-command" in str(exc):
+                raise RuntimeError(
+                    "E213 firmware is too old for reliable USB downloads. "
+                    "Flash the latest dev heltec_e213_writer firmware, then "
+                    "reopen E213 Personal Sync. No SD format is needed."
+                ) from exc
+            raise
+        if len(first) != 3 or first[0] != "BEGIN" or not HASH.fullmatch(first[2]):
+            raise RuntimeError(f"E213 GET2 returned an invalid header for {name}")
+        try:
+            length = int(first[1])
+        except ValueError as exc:
+            raise RuntimeError(f"E213 GET2 returned invalid file size for {name}") from exc
+        if length < 0 or length > (MAX_MANIFEST if name == ".sync" else MAX_FILE):
+            raise ValueError(f"E213 GET2 file size out of bounds for {name}")
         result = bytearray()
+        # The first ACK requests the first data frame. Each subsequent ACK
+        # requests exactly one more frame; the final ACK receives END.
+        self.send("ACK")
         while True:
-            part = self.next()
+            try:
+                part = self.next(timeout=65)
+            except TimeoutError as exc:
+                raise RuntimeError(
+                    f"E213 download {name} stalled after {len(result)}/{length} "
+                    "bytes. Reconnect and rescan before retrying."
+                ) from exc
             if part == ["END"]:
                 break
             if len(part) != 2 or part[0] != "DATA":
-                raise RuntimeError("Bad data frame")
-            result.extend(base64.b64decode(part[1], validate=True))
-            if len(result) > length:
-                raise RuntimeError("Oversized data transfer")
+                raise RuntimeError(
+                    f"E213 download {name}: malformed DATA frame after "
+                    f"{len(result)}/{length} bytes"
+                )
+            encoded = part[1]
+            try:
+                chunk = base64.b64decode(encoded, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise RuntimeError(
+                    f"E213 download {name}: corrupt Base64 DATA after "
+                    f"{len(result)}/{length} bytes; do not trust this "
+                    "transfer or overwrite either copy"
+                ) from exc
+            if not chunk or len(chunk) > 24 or len(result) + len(chunk) > length:
+                raise RuntimeError(
+                    f"E213 download {name}: invalid DATA length after "
+                    f"{len(result)}/{length} bytes"
+                )
+            result.extend(chunk)
+            self.send("ACK")
         data = bytes(result)
         if len(data) != length or checksum(data) != first[2]:
-            raise RuntimeError("Transfer failed checksum verification")
+            raise RuntimeError(
+                f"E213 download {name}: SHA-256 or length verification failed "
+                f"({len(data)}/{length} bytes). No data was accepted."
+            )
         return data, first[2]
 
     def put(self, name: str, data: bytes, expected: str):
