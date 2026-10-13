@@ -113,33 +113,65 @@ Replace COM10 with your actual E213 port. Close the serial monitor before sync.
 - Reboot restores the last document via SD /.active
 - A failed save blocks switching documents; never silently fall back to flash
 
-## Plot n Jot chapter/scene hierarchy on the E213
+## My Documents and multiple Plot n Jot projects on the E213
 
-The E213 picker no longer alphabetizes linked scene filenames. Plot n Jot's
-existing chapter/scene position order is stored in an optional `chapters`
-section of the E213 SD card's `/.sync` metadata file (no renaming or
-reorganizing physical SD files). When this data exists, use **Ctrl+O**
-to open **CHAPTERS**, use the up/down keys to choose a chapter, then Enter
-to browse its scenes in Plot n Jot order. Press Esc to return to chapters
-and Esc again to exit. The external B1 (next), B2 (select), and long B1
-(back) provide the same navigation without a keyboard.
+**Ctrl+O now opens a root folder picker** (also supported by external B1/B2):
 
-**Local drafts** appears after the ordered chapters for any unlinked TXT
-documents, including previous Draft-NNN files. If no Plot n Jot outline
-exists, the old flat filename picker remains available.
+- **My Documents**: personal/diary `.txt` files that have no Plot n Jot link.
+- **Project title** (one root folder per linked Plot n Jot project)
+  - **Chapter title** in the exact chapter order from Plot n Jot.
+    - Individual scene documents in Plot n Jot scene order.
 
-The personal Linux E213 Sync window writes/refreshes order automatically
-when importing or linking scenes and after a confirmed Sync now. To update
-files already imported before this feature without reimporting or overwriting
-anything, use **Refresh chapter order**. It backs up the SD and updates
-only display metadata in `/.sync`; it does not modify manuscript text or
-Plot n Jot. The file browser reads it when you next open Ctrl+O. Reordering
-chapters or scenes in Plot n Jot can be reflected by clicking the same
-Refresh chapter order button.
+Use the keyboard arrow keys and Enter to move down, Esc to move up or
+exit. Or use B1 to advance, B2 to enter/select, and long B1 to go back.
+The firmware shows only real files present on the microSD and does not
+hide private drafts even if the metadata is incomplete: unmapped files
+appear in My Documents. Old version-1 mappings still appear as a
+**single project**; scenes with no ordering metadata appear in that
+project's **Other scenes** chapter until refreshed.
 
-Both the E213 firmware and the personal Linux app must be updated from
-CrossPointXT `dev` for this browser change. Plot n Jot's public release
-remains untouched.
+**The folder hierarchy is virtual.** Files stay in `/drafts` on the card.
+Only metadata in `/.sync` controls their on-screen hierarchy. There is
+no destructive migration, renaming, moving files, or separate SD
+directory per project. This preserves existing filenames and sync links.
+
+The Linux personal sync GUI's **Load projects** selector chooses the Plot n Jot
+project to import or synchronize. After one project is linked, selecting
+another and importing its scenes automatically upgrades the card's
+`/.sync` from version 1 to a checked version 2 containing independent
+project records, including each project's chapter ordering and
+existing filename-to-scene bindings. **Existing project data remains
+unchanged**, and different projects cannot claim the same SD filename.
+Same-title scene filenames get distinct ID suffixes. The 16-KiB
+`/.sync` limit and 200-document cap still apply globally.
+
+To organize files imported before this change:
+
+1. Open the latest Linux **E213 Personal Sync** app and choose your
+   Plot n Jot project.
+2. Click **Back up E213**; confirm the backup contains your standalone
+   diary. Keep its verified local backup folder safe.
+3. Click **Refresh chapter order**. This modifies only the `.sync`
+   metadata and never modifies scene text or the Plot n Jot database.
+   If the previous complete backup is SHA-256-identical to every current
+   file **and** `.sync`, refresh can safely reuse it rather than
+   re-downloading all manuscripts. Otherwise it creates a fresh backup.
+4. Exit USB SYNC and press **Ctrl+O** to browse My Documents and your
+   project folder. For additional projects, select the next project in
+   the Linux app and use **Import multiple scenes…**.
+
+A transient GET2 `download-timeout` during backup triggers one clean
+read-only reconnect/whole-file retry, including tolerance for a stale
+`unknown-command` from an ACK arriving after a previous timeout.
+Only a fully SHA-256-verified download is trusted. If both attempts fail,
+do not delete or format the card; the error names the interrupted file.
+An already verified complete backup may be copied directly from the SD
+card with a card reader if the USB interface remains unreliable.
+
+Both the E213 **writer firmware** and the Linux personal sync app must
+be updated from CrossPointXT `dev` to display project folders and
+accept multi-project manifest v2. The Plot n Jot application itself
+is unchanged. **Never erase flash or format microSD while upgrading.**
 
 ## First-time transfer: Plot n Jot to a blank E213
 
