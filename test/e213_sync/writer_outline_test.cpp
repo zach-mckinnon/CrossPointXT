@@ -38,6 +38,34 @@ int main() {
   assert(malformed[0].files.size() == 1);
   assert(malformed[0].files[0] == "Safe.txt");
 
+  // The browser must keep personal, non-synced drafts separate from each
+  // Plot n Jot project's scenes, even if the TXT filenames are alphabetical.
+  using writeroutline::Project;
+  const std::vector<Project> projects{
+    {"Novel Two", {Section{"Ending", {"Zebra.txt"}}}, false},
+    {"Novel One", {Section{"Beginnings", {"Act One.txt", "Alpha.txt"}}}, false}
+  };
+  const auto tree = writeroutline::organizeProjects(alphabetical, projects);
+  assert(tree.size() == 3);
+  assert(tree[0].personal && tree[0].title == "My Documents");
+  assert(tree[0].chapters[0].files.size() == 1);
+  assert(tree[0].chapters[0].files[0] == "Draft-001.txt");
+  assert(tree[1].title == "Novel Two");
+  assert(tree[1].chapters[0].title == "Ending");
+  assert(tree[1].chapters[0].files[0] == "Zebra.txt");
+  assert(tree[2].title == "Novel One");
+  assert(tree[2].chapters[0].files[0] == "Act One.txt");
+  assert(tree[2].chapters[0].files[1] == "Alpha.txt");
+
+  const auto duplicate = writeroutline::organizeProjects(
+      {"One.txt"}, {
+        {"First", {Section{"C1", {"One.txt"}}}, false},
+        {"Second", {Section{"C2", {"One.txt"}}}, false}
+      });
+  assert(duplicate.size() == 2);
+  assert(duplicate[0].personal && duplicate[0].chapters[0].files.empty());
+  assert(duplicate[1].title == "First");
+
   const auto noFiles = writeroutline::organize({}, plotOrder);
   assert(noFiles.empty());
 }
