@@ -299,6 +299,77 @@ class PersonalSyncSafetyTests(unittest.TestCase):
         self.assertEqual(self.usb.data["Scene 2.txt"], previous["Scene 2.txt"])
         self.assertEqual(__import__("json").loads(self.usb.data[".sync"])["chapters"][0]["title"], "New First")
 
+    def test_two_projects_migrate_v1_manifest_without_touching_any_prose(self):
+        # Existing project must remain linked when importing another, while
+        # unsynced personal drafts remain outside either project.
+        self.usb.data["My Diary.txt"] = b"never-synced private writing"
+        old_diary = self.usb.data["My Diary.txt"]
+        personal.import_scenes(*self.args, [101])
+        original_manifest = __import__("json").loads(self.usb.data[".sync"])
+        self.assertEqual(original_manifest["version"], 1)
+        self.assertEqual(original_manifest["scenes"]["Scene 1.txt"]["scene_id"], 101)
+
+        second = {"id": 201, "chapter_id": 8, "content": "second project"}
+        orig_get = self.db.get_scene
+        orig_project = self.db.get_project
+        orig_manuscript = self.db.get_full_manuscript_data
+
+        def multi_scene(scene_id):
+            return second if scene_id == 201 else orig_get(scene_id)
+
+        def multi_project(project_id):
+            return ({"id": 43, "name": "Another Novel"} if project_id == 43
+                    else orig_project(project_id))
+
+        def multi_manuscript(project_id):
+            if project_id == 43:
+                return [{"title": "Second Project Chapter",
+                         "scenes": [{"id": 201, "title": "Scene 1"}]}]
+            return orig_manuscript(project_id)
+
+        with patch.object(self.db, "get_scene", side_effect=multi_scene), \
+             patch.object(self.db, "get_project", side_effect=multi_project), \\
+             patch.object(self.db, "get_full_manuscript_data",
+                          side_effect=multi_manuscript):
+            report = personal.import_scenes(
+                self.args[0], self.args[1], self.args[2], 43, [201])
+            self.assertIn("1 linked", report)
+            store = __import__("json").loads(self.usb.data[".sync"])
+            self.assertEqual(store["version"], 2)
+            self.assertEqual(len(store["projects"]), 2)
+            first = next(p for p in store["projects"] if p["project_id"] == 42)
+            latter = next(p for p in store["projects"] if p["project_id"] == 43)
+            self.assertEqual(first["scenes"], original_manifest["scenes"])
+            self.assertEqual(latter["chapters"][0]["title"],
+                             "Second Project Chapter")
+            self.assertEqual(len(latter["scenes"]), 1)
+            second_file = next(iter(latter["scenes"]))
+            self.assertNotEqual(second_file, "Scene 1.txt")
+            self.assertEqual(self.usb.data[second_file], b"second project")
+            with self.assertRaisesRegex(ValueError, "already linked"):
+                personal.link_scene(self.args[0], self.args[1], self.args[2],
+                                    43, "Scene 1.txt", 201, "device")
+            bridge.get_manifest(self.usb, 42, "Test")  # Existing project readable.
+
+        self.assertEqual(self.usb.data["My Diary.txt"], old_diary)
+        self.assertEqual(self.usb.data["Scene 1.txt"], b"written on laptop")
+        self.assertEqual(self.db.scene["content"], "written on laptop")
+
+    def test_v2_validate_rejects_duplicate_global_filename(self):
+        doc = {
+            "version": 2, "provider": "plot-and-jot",
+            "projects": [
+                {"project_id": 42, "project_name": "A",
+                 "scenes": {"Same.txt": {"scene_id": 1, "chapter_id": 7,
+                                        "revision": bridge.checksum(b"a")}}},
+                {"project_id": 43, "project_name": "B",
+                 "scenes": {"Same.txt": {"scene_id": 2, "chapter_id": 8,
+                                        "revision": bridge.checksum(b"b")}}}
+            ]
+        }
+        with self.assertRaisesRegex(ValueError, "multiple projects"):
+            bridge.validate_store(doc)
+
     def test_scene_title_to_safe_filename(self):
         self.assertEqual(personal.suggest_filename("Part One / Café -- Arrival"),
                          "Cafe -- Arrival.txt")
