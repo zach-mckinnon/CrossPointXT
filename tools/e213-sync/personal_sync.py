@@ -88,6 +88,64 @@ def suggest_filename(scene_label: str) -> str:
     return (simple or "New Scene") + ".txt"
 
 
+def chapter_outline(db, project_id: int, scene_bindings: dict) -> list[dict]:
+    """Mirror actual Plot n Jot chapter/scene positions, never alphabetical TXT.
+
+    The database adapter returns chapters/scenes in their position order.
+    Include only scenes already linked to files; leave local drafts untouched.
+    Existing bindings (scene ID, chapter ID, revision) stay unchanged.
+    """
+    filenames = {int(item["scene_id"]): filename
+                 for filename, item in scene_bindings.items()}
+    result = []
+    for chapter in db.get_full_manuscript_data(project_id):
+        files = [filenames[int(scene["id"])]
+                 for scene in chapter["scenes"] if int(scene["id"]) in filenames]
+        if files:
+            result.append({
+                "title": str(chapter["title"])[:80],
+                "files": files
+            })
+    return result
+
+
+def set_chapter_outline(db, project_id: int, manifest: dict) -> bool:
+    """Update ordering metadata only; never change prose or revisions."""
+    outline = chapter_outline(db, project_id, manifest["scenes"])
+    if manifest.get("chapters") == outline:
+        return False
+    manifest["chapters"] = outline
+    return True
+
+
+def refresh_chapter_order(port: str, source: str, database: str,
+                          project_id: int) -> str:
+    db = db_manager(source, database)
+    project = db.get_project(project_id)
+    if not project:
+        raise ValueError("Plot n Jot project no longer exists.")
+    def update(usb):
+        manifest, previous = bridge.get_manifest(usb, project_id, project["name"])
+        if not manifest["scenes"]:
+            return "No linked scenes yet. Import or link a scene first."
+        updated = set_chapter_outline(db, project_id, manifest)
+        if not updated:
+            return "Chapter/scene order is already up to date."
+        BACKUP_PATH.mkdir(parents=True, exist_ok=True)
+        backup = bridge.backup_device(usb, BACKUP_PATH)
+        bridge.put_manifest(usb, manifest, previous)
+        confirmed, _ = bridge.get_manifest(usb, project_id, project["name"])
+        if confirmed.get("chapters") != manifest["chapters"]:
+            raise RuntimeError(
+                "Chapter order write could not be verified. The SD backup is "
+                f"preserved at {backup}."
+            )
+        return (f"Updated {len(manifest['chapters'])} chapter group(s) on E213.\\n"
+                "TXT contents and Plot n Jot database were not changed.\\n"
+                f"Verified SD backup: {backup}")
+    return with_usb(port, update)
+
+
 def import_scene(port: str, source: str, database: str, project_id: int,
                  scene_id: int, filename: str) -> str:
     """Create a new named SD document from the existing Plot n Jot scene.
@@ -138,6 +196,7 @@ def import_scene(port: str, source: str, database: str, project_id: int,
             "chapter_id": int(scene["chapter_id"]),
             "revision": expected
         }
+        set_chapter_outline(db, project_id, manifest)
         try:
             bridge.put_manifest(usb, manifest, previous)
         except Exception as exc:
@@ -249,6 +308,7 @@ def import_scenes(port: str, source: str, database: str, project_id: int,
                 "revision": bridge.checksum(content)
             }
             staged_manifest = dict(manifest, scenes=proposed)
+            set_chapter_outline(db, project_id, staged_manifest)
             bridge.validate_manifest(staged_manifest, project_id)
             if len(json.dumps(staged_manifest, ensure_ascii=False, indent=2).encode("utf-8")) > bridge.MAX_MANIFEST:
                 raise ValueError("The E213 sync mapping file is full (16 KiB). No further scenes imported.")
@@ -322,6 +382,7 @@ def link_scene(port: str, source: str, database: str, project_id: int,
             "scene_id": scene_id, "chapter_id": int(scene["chapter_id"]),
             "revision": baseline
         }
+        set_chapter_outline(db, project_id, manifest)
         bridge.put_manifest(usb, manifest, previous)
         return f"Linked {filename} to scene {scene_id}.\nSD backup: {backup}\nClick Preview, then Sync to transfer content."
     return with_usb(port, link)
@@ -340,6 +401,7 @@ def unlink_scene(port: str, source: str, database: str, project_id: int, filenam
         BACKUP_PATH.mkdir(parents=True, exist_ok=True)
         backup = bridge.backup_device(usb, BACKUP_PATH)
         del manifest["scenes"][filename]
+        set_chapter_outline(db, project_id, manifest)
         bridge.put_manifest(usb, manifest, previous)
         return (f"Unlinked {filename}. Both the E213 document and Plot n Jot scene remain unchanged.\n"
                 f"SD backup: {backup}\nYou may now rename this document on the E213.")
