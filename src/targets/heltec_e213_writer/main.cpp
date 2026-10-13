@@ -85,10 +85,13 @@ std::string document;
 std::string activeName = "Draft-001.txt";
 std::vector<std::string> fileList;
 std::vector<writeroutline::Section> fileSections;
+std::vector<writeroutline::Project> projectList;
 size_t fileIndex = 0;
 size_t sectionIndex = 0;
+size_t projectIndex = 0;
 bool fileMenu = false;
 bool chapterMenu = false;
+bool projectMenu = false;
 enum class NameMode { None, Create, Rename };
 NameMode nameMode = NameMode::None;
 std::string nameInput;
@@ -201,44 +204,103 @@ void renderPairing(const bool forceFull = false) {
 
 // Prefer Plot n Jot's persisted chapter/scene order; fallback to the original
 // flat alphabetical picker for standalone drafts or older .sync manifests.
+// The file picker is a non-destructive VIRTUAL hierarchy. All SD manuscripts
+// remain in /drafts, so old project links and personal diaries remain intact.
 void openFileBrowser() {
   fileList = writerfiles::list();
-  fileSections.clear();
-  sectionIndex = 0;
-  chapterMenu = false;
+  std::vector<writeroutline::Project> desired;
   std::string json;
   if (writerfiles::readManifest(json)) {
     JsonDocument doc;
-    if (deserializeJson(doc, json) == DeserializationError::Ok &&
-        doc["chapters"].is<JsonArray>()) {
-      std::vector<writeroutline::Section> outline;
-      for (JsonObject chapter : doc["chapters"].as<JsonArray>()) {
-        writeroutline::Section group;
-        const char* title = chapter["title"] | "";
-        group.title = title;
-        for (JsonVariant entry : chapter["files"].as<JsonArray>()) {
-          const char* name = entry.as<const char*>();
-          if (name && writerfiles::validName(name)) group.files.push_back(name);
-        }
-        if (!group.files.empty()) outline.push_back(group);
-      }
-      if (!outline.empty()) {
-        fileSections = writeroutline::organize(fileList, outline);
-        chapterMenu = !fileSections.empty();
-        for (size_t i = 0; i < fileSections.size(); ++i) {
-          const auto& files = fileSections[i].files;
-          if (std::find(files.begin(), files.end(), activeName) != files.end()) {
-            sectionIndex = i;
-            break;
+    if (deserializeJson(doc, json) == DeserializationError::Ok) {
+      auto appendProject = [&](JsonObject project) {
+        writeroutline::Project folder;
+        folder.title = std::string(project["project_name"] | "Plot n Jot project");
+        // An existing v1 manifest may not have chapter metadata yet. Keep
+        // all its linked scenes grouped under the project until refreshed.
+        std::vector<std::string> included;
+        if (project["chapters"].is<JsonArray>()) {
+          for (JsonObject chapter : project["chapters"].as<JsonArray>()) {
+            writeroutline::Section group;
+            group.title = std::string(chapter["title"] | "Untitled chapter");
+            if (chapter["files"].is<JsonArray>()) {
+              for (JsonVariant entry : chapter["files"].as<JsonArray>()) {
+                const char* filename = entry.as<const char*>();
+                if (filename && writerfiles::validName(filename) &&
+                    project["scenes"][filename].is<JsonObject>() &&
+                    std::find(included.begin(), included.end(), filename) == included.end()) {
+                  group.files.push_back(filename);
+                  included.push_back(filename);
+                }
+              }
+            }
+            if (!group.files.empty()) folder.chapters.push_back(group);
           }
         }
+        writeroutline::Section other{"Other scenes", {}};
+        if (project["scenes"].is<JsonObject>()) {
+          for (JsonPair pair : project["scenes"].as<JsonObject>()) {
+            const std::string filename = pair.key().c_str();
+            if (writerfiles::validName(filename) &&
+                std::find(included.begin(), included.end(), filename) == included.end())
+              other.files.push_back(filename);
+          }
+        }
+        if (!other.files.empty()) folder.chapters.push_back(other);
+        if (!folder.chapters.empty()) desired.push_back(folder);
+      };
+      if ((doc["version"] | 0) == 2 && doc["projects"].is<JsonArray>()) {
+        for (JsonObject project : doc["projects"].as<JsonArray>())
+          appendProject(project);
+      } else if ((doc["version"] | 0) == 1 &&
+                 doc["provider"] == "plot-and-jot") {
+        appendProject(doc.as<JsonObject>());
       }
     }
   }
-  auto found = std::find(fileList.begin(), fileList.end(), activeName);
-  fileIndex = found != fileList.end()
-      ? static_cast<size_t>(found - fileList.begin()) : 0;
+  projectList = writeroutline::organizeProjects(fileList, desired);
+  fileSections.clear();
+  projectIndex = 0;
+  for (size_t p = 0; p < projectList.size(); ++p) {
+    for (const auto& section : projectList[p].chapters) {
+      if (std::find(section.files.begin(), section.files.end(), activeName)
+          != section.files.end()) {
+        projectIndex = p;
+        break;
+      }
+    }
+  }
+  sectionIndex = 0;
+  fileIndex = 0;
   fileMenu = true;
+  projectMenu = true;
+  chapterMenu = false;
+  renderPending = true;
+}
+
+void enterSelectedProject() {
+  if (projectIndex >= projectList.size()) return;
+  const auto& project = projectList[projectIndex];
+  fileSections = project.chapters;
+  sectionIndex = 0;
+  if (project.personal) {
+    fileList = fileSections.empty()
+        ? std::vector<std::string>{} : fileSections.front().files;
+    auto found = std::find(fileList.begin(), fileList.end(), activeName);
+    fileIndex = found == fileList.end() ? 0
+        : static_cast<size_t>(found - fileList.begin());
+    chapterMenu = false;
+  } else {
+    for (size_t i = 0; i < fileSections.size(); ++i) {
+      const auto& filenames = fileSections[i].files;
+      if (std::find(filenames.begin(), filenames.end(), activeName) != filenames.end()) {
+        sectionIndex = i;
+        break;
+      }
+    }
+    chapterMenu = true;
+  }
+  projectMenu = false;
   renderPending = true;
 }
 
@@ -246,26 +308,45 @@ void enterSelectedChapter() {
   if (sectionIndex >= fileSections.size()) return;
   fileList = fileSections[sectionIndex].files;
   auto found = std::find(fileList.begin(), fileList.end(), activeName);
-  fileIndex = found != fileList.end()
-      ? static_cast<size_t>(found - fileList.begin()) : 0;
+  fileIndex = found == fileList.end() ? 0
+      : static_cast<size_t>(found - fileList.begin());
   chapterMenu = false;
   renderPending = true;
 }
 
 void leaveFileBrowserLevel() {
-  if (!chapterMenu && !fileSections.empty()) chapterMenu = true;
-  else { fileMenu = false; chapterMenu = false; }
+  if (projectMenu) {
+    fileMenu = false;
+    projectMenu = false;
+    chapterMenu = false;
+  } else if (chapterMenu) {
+    projectMenu = true;
+    chapterMenu = false;
+  } else if (projectIndex < projectList.size() &&
+             !projectList[projectIndex].personal) {
+    chapterMenu = true;
+  } else {
+    projectMenu = true;
+  }
   renderPending = true;
 }
 
 void renderFilePicker() {
-  const size_t total = chapterMenu ? fileSections.size() : fileList.size();
-  const size_t selected = chapterMenu ? sectionIndex : fileIndex;
+  const size_t total = projectMenu ? projectList.size()
+      : chapterMenu ? fileSections.size() : fileList.size();
+  const size_t selected = projectMenu ? projectIndex
+      : chapterMenu ? sectionIndex : fileIndex;
   prepareDisplayFrame();
   display.setCursor(kTextLeft, writergeometry::kHeaderTop);
-  if (chapterMenu) display.print("CHAPTERS   ENTER:OPEN");
-  else if (!fileSections.empty()) display.print(cropped(fileSections[sectionIndex].title, 32).c_str());
-  else display.print("FILES  ENTER:OPEN  ESC:BACK");
+  if (projectMenu) display.print("DOCUMENTS & PROJECTS");
+  else if (chapterMenu && projectIndex < projectList.size())
+    display.print(cropped(projectList[projectIndex].title, 34).c_str());
+  else if (projectIndex < projectList.size() &&
+           projectList[projectIndex].personal)
+    display.print("MY DOCUMENTS");
+  else if (sectionIndex < fileSections.size())
+    display.print(cropped(fileSections[sectionIndex].title, 34).c_str());
+  else display.print("FILES");
   display.drawLine(0, writergeometry::kHeaderDivider,
                    display.width() - 1, writergeometry::kHeaderDivider, BLACK);
   const size_t first = selected >= 6 ? selected - 6 : 0;
@@ -273,7 +354,10 @@ void renderFilePicker() {
     const size_t i = first + row;
     display.setCursor(kTextLeft, writergeometry::fileRowTop(static_cast<int>(row)));
     display.print(i == selected ? "> " : "  ");
-    if (chapterMenu) {
+    if (projectMenu) {
+      const auto& project = projectList[i];
+      display.print(cropped(project.title, 32).c_str());
+    } else if (chapterMenu) {
       display.print(cropped(fileSections[i].title, 28).c_str());
       display.print(" (");
       display.print(fileSections[i].files.size());
@@ -285,8 +369,9 @@ void renderFilePicker() {
   display.drawLine(0, writergeometry::footerDivider(display.height()),
                    display.width() - 1, writergeometry::footerDivider(display.height()), BLACK);
   display.setCursor(kTextLeft, writergeometry::footerTop(display.height()));
-  display.print(chapterMenu ? "ENTER: SCENES  ESC: BACK"
-                            : "ENTER: OPEN  ESC: BACK");
+  display.print(projectMenu ? "ENTER: PROJECT  ESC: CLOSE"
+                            : chapterMenu ? "ENTER: SCENES  ESC: BACK"
+                                          : "ENTER: OPEN  ESC: BACK");
   display.update();
   renderPending = false;
   lastRenderAt = millis();
@@ -591,7 +676,7 @@ void beginNameEditor(NameMode mode) {
     Serial.println("Cannot edit title while document save is failing");
     return;
   }
-  renameSource = (mode == NameMode::Rename && fileMenu && !chapterMenu &&
+  renameSource = (mode == NameMode::Rename && fileMenu && !chapterMenu && !projectMenu &&
                   fileIndex < fileList.size())
       ? fileList[fileIndex] : activeName;
   nameInput = mode == NameMode::Rename ? writernames::stem(renameSource) : "";
@@ -735,7 +820,7 @@ void handleKeyboardEvents() {
       continue;
     }
     if (event.type == BleWriterKeyboard::KeyType::RenameFile) {
-      if (!fileMenu || !chapterMenu) beginNameEditor(NameMode::Rename);
+      if (!fileMenu || (!chapterMenu && !projectMenu)) beginNameEditor(NameMode::Rename);
       continue;
     }
     if (event.type == BleWriterKeyboard::KeyType::OpenFiles) {
@@ -743,7 +828,7 @@ void handleKeyboardEvents() {
         Serial.println("Cannot open file picker: autosave failed");
         continue;
       }
-      if (fileMenu) { fileMenu = false; chapterMenu = false; }
+      if (fileMenu) { fileMenu = false; chapterMenu = false; projectMenu = false; }
       else openFileBrowser();
       renderPending = true;
       lastKeyAt = millis();
@@ -761,17 +846,22 @@ void handleKeyboardEvents() {
     if (fileMenu) {
       switch (event.type) {
         case BleWriterKeyboard::KeyType::Up:
-          if (chapterMenu) {
+          if (projectMenu) {
+            if (projectIndex > 0) --projectIndex;
+          } else if (chapterMenu) {
             if (sectionIndex > 0) --sectionIndex;
           } else if (fileIndex > 0) --fileIndex;
           break;
         case BleWriterKeyboard::KeyType::Down:
-          if (chapterMenu) {
+          if (projectMenu) {
+            if (projectIndex + 1 < projectList.size()) ++projectIndex;
+          } else if (chapterMenu) {
             if (sectionIndex + 1 < fileSections.size()) ++sectionIndex;
           } else if (fileIndex + 1 < fileList.size()) ++fileIndex;
           break;
         case BleWriterKeyboard::KeyType::Enter:
-          if (chapterMenu) enterSelectedChapter();
+          if (projectMenu) enterSelectedProject();
+          else if (chapterMenu) enterSelectedChapter();
           else if (fileIndex < fileList.size() && !switchDraft(fileList[fileIndex]))
             Serial.println("Open failed; current draft preserved");
           break;
@@ -844,13 +934,16 @@ void handleButtons() {
     if (next == ButtonEvent::Long) {
       leaveFileBrowserLevel();
     } else if (next == ButtonEvent::Short) {
-      if (chapterMenu && !fileSections.empty()) {
+      if (projectMenu && !projectList.empty()) {
+        projectIndex = (projectIndex + 1) % projectList.size();
+      } else if (chapterMenu && !fileSections.empty()) {
         sectionIndex = (sectionIndex + 1) % fileSections.size();
       } else if (!fileList.empty()) {
         fileIndex = (fileIndex + 1) % fileList.size();
       }
     } else if (select == ButtonEvent::Short) {
-      if (chapterMenu) enterSelectedChapter();
+      if (projectMenu) enterSelectedProject();
+      else if (chapterMenu) enterSelectedChapter();
       else if (fileIndex < fileList.size() && !switchDraft(fileList[fileIndex]))
         Serial.println("Cannot open file from button: save/read failed");
     }
