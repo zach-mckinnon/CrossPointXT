@@ -10,11 +10,16 @@ import plot_jot_sync as bridge
 
 
 class DownloadSerial:
-    def __init__(self, filename, content, *, corrupt_at=None, legacy=False):
+    def __init__(self, filename, content, *, corrupt_at=None, legacy=False,
+                 stale_header_once=False, invalid_header_always=False):
         self.filename = filename
         self.content = content
         self.corrupt_at = corrupt_at
         self.legacy = legacy
+        self.stale_header_once = stale_header_once
+        self.invalid_header_always = invalid_header_always
+        self.requests = 0
+        self.resets = 0
         self.offset = 0
         self.acks = 0
         self.sent = []
@@ -27,9 +32,11 @@ class DownloadSerial:
         self.sent.append(line)
         cmd, *args = line[len(bridge.PREFIX):].split("|")
         if cmd == "HELLO":
+            self.resets += 1
             self.active = False
             self.lines.append(b"E213SYNC1|READY\n")
         elif cmd == "GET2":
+            self.requests += 1
             if self.legacy:
                 self.lines.append(b"E213SYNC1|ERR|unknown-command\n")
             elif args == [self.filename]:
@@ -37,9 +44,14 @@ class DownloadSerial:
                 self.offset = 0
                 self.acks = 0
                 digest = hashlib.sha256(self.content).hexdigest()
-                self.lines.append(
-                    f"E213SYNC1|BEGIN|{len(self.content)}|{digest}\n".encode()
-                )
+                if self.invalid_header_always or (
+                    self.stale_header_once and self.requests == 1
+                ):
+                    self.lines.append(b"E213SYNC1|READY\n")
+                else:
+                    self.lines.append(
+                        f"E213SYNC1|BEGIN|{len(self.content)}|{digest}\n".encode()
+                    )
             else:
                 self.lines.append(b"E213SYNC1|ERR|not-found\n")
         elif cmd == "ACK":
@@ -87,6 +99,29 @@ class UsbGet2Tests(unittest.TestCase):
         self.assertTrue(all(0 < n <= 64 for n in serial.response_frames))
         self.assertIn("E213SYNC1|GET2|Browsing the Web.txt", serial.sent)
         self.assertNotIn("E213SYNC1|GET|Browsing the Web.txt", serial.sent)
+
+    def test_stale_ready_header_recovers_without_changing_device_text(self):
+        content = b"diary stays safe" * 70
+        serial = DownloadSerial("Chats and Skimms.txt", content,
+                                stale_header_once=True)
+        actual, digest = self.client(serial).get("Chats and Skimms.txt")
+        self.assertEqual(actual, content)
+        self.assertEqual(digest, bridge.checksum(content))
+        self.assertEqual(serial.requests, 2)
+        self.assertEqual(serial.resets, 1)
+
+    def test_persistent_invalid_header_reports_response_without_exposing_prose(self):
+        serial = DownloadSerial("Chats and Skimms.txt", b"diary prose",
+                                invalid_header_always=True)
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"invalid header for Chats and Skimms\\.txt "
+            r"\\(received READY, 1 field\\(s\\); retry also failed\\)"
+        ):
+            self.client(serial).get("Chats and Skimms.txt")
+        self.assertEqual(serial.requests, 2)
+        self.assertEqual(serial.resets, 1)
+        self.assertEqual(serial.content, b"diary prose")
 
     def test_empty_scene_returns_empty_and_one_end_ack(self):
         serial = DownloadSerial("Empty.txt", b"")
