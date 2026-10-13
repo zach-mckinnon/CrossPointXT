@@ -424,6 +424,13 @@ def sync_action(port: str, source: str, database: str, project_id: int, apply: b
             output.write(f"Verified E213 SD backup: {backup}\n")
         with contextlib.redirect_stdout(output):
             summary = bridge.synchronize(usb, db, project_id, manifest, previous, dry_run=not apply)
+        if apply:
+            # Manuscript sync may have replaced .sync. Refresh its SHA before
+            # writing the display-only chapter/scene outline separately.
+            current, revision = bridge.get_manifest(usb, project_id, project["name"])
+            if set_chapter_outline(db, project_id, current):
+                bridge.put_manifest(usb, current, revision)
+                output.write("Refreshed E213 chapter and scene order.\n")
         output.write(f"\nSummary: {summary}\n")
         if summary["conflict"]:
             output.write("CONFLICT: neither competing copy was overwritten. Resolve manually.\n")
@@ -546,6 +553,8 @@ class PersonalSyncApp:
         self.apply_button = ttk.Button(actions, text="2. Sync now", command=self.sync, state="disabled")
         self.apply_button.pack(side="left", padx=12)
         ttk.Button(actions, text="Back up E213", command=self.backup).pack(side="left")
+        ttk.Button(actions, text="Refresh chapter order", command=self.refresh_order).pack(
+            side="left", padx=(12, 0))
         ttk.Label(outer, textvariable=self.status).grid(row=10, column=0, columnspan=3, sticky="w")
         self.log = tk.Text(outer, wrap="word", height=9, state="disabled")
         self.log.grid(row=11, column=0, columnspan=3, sticky="nsew", pady=(5, 0))
@@ -857,6 +866,19 @@ class PersonalSyncApp:
             self.status.set("Sync complete. Review summary and reopen Plot n Jot.")
             self.scan()
         self._run("Backing up E213 and synchronizing…", lambda: sync_action(*args, apply=True), done)
+
+    def refresh_order(self):
+        args = self._args_or_message()
+        if not args:
+            return
+        def done(output):
+            self._write(output)
+            self.status.set("E213 chapter/scene order refreshed.")
+            self.preview_key = None
+        self._run(
+            "Updating E213 chapter/scene order without changing prose…",
+            lambda: refresh_chapter_order(*args), done
+        )
 
     def backup(self):
         args = self._args_or_message()
