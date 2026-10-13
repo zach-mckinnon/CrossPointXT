@@ -228,6 +228,22 @@ class PersonalSyncSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "write-failed"):
                 personal.import_scene(*self.args, 101, "Named Scene.txt")
 
+    def test_same_scene_title_across_chapters_gets_distinct_filename_even_later(self):
+        self.db.layout = [
+            {"title": "Chapter 1", "scenes": [{"id": 101, "title": "Scene 1"}]},
+            {"title": "Chapter 2", "scenes": [{"id": 102, "title": "Scene 1"}]}
+        ]
+        personal.import_scenes(*self.args, [101])
+        result = personal.import_scenes(*self.args, [102])
+        self.assertIn("1 linked", result)
+        manifest = __import__("json").loads(self.usb.data[".sync"])
+        self.assertEqual(manifest["chapters"], [
+            {"title": "Chapter 1", "files": ["Scene 1.txt"]},
+            {"title": "Chapter 2", "files": ["Scene 1 - 102.txt"]}
+        ])
+        self.assertEqual(self.usb.data["Scene 1.txt"], b"written on laptop")
+        self.assertEqual(self.usb.data["Scene 1 - 102.txt"], b"another scene")
+
     def test_import_persists_desktop_chapter_scene_order_not_filename_order(self):
         self.db.layout = [
             {"title": "Chapter 2", "scenes": [{"id": 102, "title": "Scene 2"}]},
