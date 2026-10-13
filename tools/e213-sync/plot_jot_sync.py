@@ -116,9 +116,17 @@ def manifest_payload(manifest: dict) -> bytes:
         # Keep the original v1 on-disk format until another project is added.
         store = dict(current, version=1, provider="plot-and-jot")
     else:
-        projects = [dict(p) for p in others
-                    if p.get("project_id") != current["project_id"]]
-        projects.append(current)
+        # Keep project positions stable when one project is re-synced.
+        # New projects go at the end, existing projects retain their order.
+        projects = [dict(p) for p in others]
+        found = False
+        for idx, project in enumerate(projects):
+            if project.get("project_id") == current["project_id"]:
+                projects[idx] = current
+                found = True
+                break
+        if not found:
+            projects.append(current)
         store = {"version": 2, "provider": "plot-and-jot", "projects": projects}
     validate_store(store)
     content = json.dumps(store, ensure_ascii=False, indent=2).encode("utf-8")
