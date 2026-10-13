@@ -12,10 +12,12 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
+import unicodedata
 import sys
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import plot_jot_sync as bridge
 from plot_db_local import LocalPlotDatabase
@@ -75,6 +77,83 @@ def snapshot(port: str, source: str, database: str, project_id: int):
         return [(name, str(bindings[name]["scene_id"]) if name in bindings else "")
                 for name in docs]
     return with_usb(port, inspect)
+
+
+def suggest_filename(scene_label: str) -> str:
+    """FAT32 and USB-safe default for a Plot n Jot chapter/scene title."""
+    title = scene_label.rsplit(" / ", 1)[-1]
+    plain = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode()
+    simple = re.sub(r"[^a-zA-Z0-9 _-]", "-", plain)
+    simple = re.sub(r" +", " ", simple).strip(" -_")[:44].rstrip(" -_")
+    return (simple or "New Scene") + ".txt"
+
+
+def import_scene(port: str, source: str, database: str, project_id: int,
+                 scene_id: int, filename: str) -> str:
+    """Create a new named SD document from the existing Plot n Jot scene.
+
+    Never create, rename or overwrite a document with an existing filename.
+    The SD sync manifest is written only after a verified file readback.
+    If manifest commit fails, the new E213 document remains as a safe unlinked
+    copy; the Plot n Jot database is not touched.
+    """
+    db = db_manager(source, database)
+    project = db.get_project(project_id)
+    if not project:
+        raise ValueError("Plot n Jot project is not available.")
+    scene = bridge.db_scene(db, project_id, scene_id)
+    if not bridge.NAME.fullmatch(filename):
+        raise ValueError("Use a name of up to 44 letters/numbers/spaces/-/_ with .txt.")
+    content = (scene["content"] or "").encode("utf-8")
+    if len(content) > bridge.MAX_FILE:
+        raise ValueError(
+            f"Scene is {len(content)} bytes, above the E213's "
+            f"{bridge.MAX_FILE}-byte per-document limit. Split the scene first."
+        )
+
+    def perform(usb):
+        docs = usb.files()
+        if any(name.casefold() == filename.casefold() for name in docs):
+            raise ValueError("A document with that name already exists on the E213. Choose another.")
+        if len(docs) >= 200:
+            raise ValueError("E213 has reached its 200-document limit.")
+        manifest, previous = bridge.get_manifest(usb, project_id, project["name"])
+        if filename in manifest["scenes"]:
+            raise ValueError("That filename is already bound to a scene.")
+        if any(item["scene_id"] == scene_id for item in manifest["scenes"].values()):
+            raise ValueError("Scene is already linked to an E213 document.")
+
+        BACKUP_PATH.mkdir(parents=True, exist_ok=True)
+        backup = bridge.backup_device(usb, BACKUP_PATH)
+        usb.put(filename, content, "*")  # * only creates a NEW file.
+        actual, digest = usb.get(filename)
+        expected = bridge.checksum(content)
+        if digest != expected or actual != content:
+            raise RuntimeError(
+                f"Import readback failed for {filename}. The original Plot n Jot scene "
+                "is untouched; inspect the SD backup before retrying."
+            )
+        manifest["scenes"][filename] = {
+            "scene_id": int(scene_id),
+            "chapter_id": int(scene["chapter_id"]),
+            "revision": expected
+        }
+        try:
+            bridge.put_manifest(usb, manifest, previous)
+        except Exception as exc:
+            raise RuntimeError(
+                f"{filename} was copied to SD, but its .sync link could not be saved. "
+                "The text remains on the SD as an unlinked document. Rescan and link "
+                "that document rather than importing it again."
+            ) from exc
+        return (
+            f"IMPORTED {filename} from Plot n Jot scene #{scene_id}.\n"
+            f"Verified {len(content)} bytes on the E213 SD card.\n"
+            f"Scene mapped for future bidirectional sync.\n"
+            f"SD backup: {backup}\n"
+            "Open this file on E213 using Ctrl+O (or the wired B1 picker)."
+        )
+    return with_usb(port, perform)
 
 
 def link_scene(port: str, source: str, database: str, project_id: int,
@@ -251,6 +330,11 @@ class PersonalSyncApp:
             row=1, column=2, padx=(8, 0))
         ttk.Button(mapping, text="Unlink", command=self.unlink).grid(
             row=1, column=3, padx=(8, 0))
+        ttk.Label(mapping, text="No documents on the E213 yet?").grid(
+            row=2, column=0, sticky="w", pady=(10, 0))
+        ttk.Button(mapping, text="Import selected Plot n Jot scene to E213",
+                   command=self.import_selected_scene).grid(
+                       row=2, column=1, columnspan=3, sticky="w", padx=(12, 0), pady=(10, 0))
 
         actions = ttk.Frame(outer)
         actions.grid(row=9, column=0, columnspan=3, sticky="w", pady=(4, 10))
@@ -381,6 +465,47 @@ class PersonalSyncApp:
             self.preview_key = None
             self.status.set(f"Found {len(files)} E213 document(s).")
         self._run("Reading SD drafts and links…", lambda: snapshot(*args), done)
+
+    def import_selected_scene(self):
+        args = self._args_or_message()
+        if not args:
+            return
+        idx = self.scene_box.current()
+        if idx < 0 or idx >= len(self.scenes):
+            messagebox.showinfo("Import to E213", "Select a Plot n Jot scene to import first.")
+            return
+        scene_id, label = self.scenes[idx]
+        filename = simpledialog.askstring(
+            "Import Plot n Jot scene",
+            "New filename on the E213 microSD (a new .txt, never overwrites):",
+            initialvalue=suggest_filename(label), parent=self.root
+        )
+        if filename is None:
+            return
+        filename = filename.strip()
+        if not bridge.NAME.fullmatch(filename):
+            messagebox.showerror(
+                "Invalid filename",
+                "Use up to 44 letters, numbers, spaces, hyphens, or underscores, ending in .txt."
+            )
+            return
+        if not messagebox.askyesno(
+            "Copy scene to E213",
+            f"Copy '{label}' to a NEW SD document named {filename}?\n\n"
+            "Your Plot n Jot scene will not be changed.\n"
+            "The new document will be linked for future two-way sync.\n"
+            "The E213 will be backed up first.\n\n"
+            "If a scene has special Unicode characters, the current E213 font "
+            "might not display them correctly."
+        ):
+            return
+        def done(report):
+            self._write(report)
+            self.status.set(f"Imported {filename}. Open it in the E213 file picker.")
+            self.preview_key = None
+            self.scan()
+        self._run("Copying Plot n Jot scene onto E213 SD…",
+                  lambda: import_scene(*args, scene_id, filename), done)
 
     def link(self):
         args = self._args_or_message()
