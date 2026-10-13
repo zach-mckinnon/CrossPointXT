@@ -113,6 +113,43 @@ Replace COM10 with your actual E213 port. Close the serial monitor before sync.
 - Reboot restores the last document via SD /.active
 - A failed save blocks switching documents; never silently fall back to flash
 
+## First-time transfer: Plot n Jot to a blank E213
+
+**Plot n Jot itself does not install on the micro-writer.** The E213 runs its
+own lightweight editor, and the Linux sync app copies each selected Plot n Jot
+scene as an ordinary UTF-8 `.txt` on the E213 microSD card.
+
+1. Flash the latest `dev` writer firmware. Connect E213 to the Linux computer
+   with a USB *data* cable. Hold the external **B1 (GPIO42)** button for
+   about 1.2 seconds, then release. The display should say **USB SYNC // E213**
+   and **Bluetooth scanning paused**. No Bluetooth keyboard is required.
+2. Open **E213 Personal Sync** on Linux, click **Detect**, **Load projects**,
+   select a Plot n Jot project, then **Scan E213**. Close other serial monitors.
+3. In the **Map selected document to scene** dropdown choose an existing
+   chapter scene. Click **Import selected Plot n Jot scene to E213**.
+4. Confirm the proposed TXT filename. The tool refuses duplicates, backs up
+   existing SD files, writes the scene to a **new** document, verifies its
+   SHA-256 and content, and binds it to its Plot n Jot scene in `/.sync`.
+   Plot n Jot's scene and database are NOT modified on import.
+5. After import, hold B1 to exit USB SYNC. With keyboard connected press
+   Ctrl+O, select the imported TXT, and press Enter. Type and save normally.
+   Later return to USB SYNC and use Preview changes / Sync now to transfer
+   modifications in either direction.
+
+**USB timeout behavior:** native ESP32-S3 USB CDC can reconnect or reset at
+serial attach. The Linux bridge now sends several idempotent HELLO requests
+for up to 55 seconds rather than dropping the session after one early packet.
+A received HELLO also enters USB SYNC mode automatically, pauses BLE discovery
+and keeps the USB loop responsive. For the first test, use B1 hold to enter
+USB SYNC before clicking Scan or Import. The sync mode does not require pairing.
+If there is no reply, verify the selected serial port, a USB data cable, and
+the physical SD card; the GUI reports an actionable error instead of silently
+continuing.
+
+Existing manuscript names and Plot n Jot links are never overwritten by
+Import. A file is limited to 128 KiB. Some Unicode punctuation may not render
+in the initial E213 bitmap font although UTF-8 bytes remain intact.
+
 ## Personal Linux desktop sync window (Plot n Jot stays unchanged)
 
 The optional **E213 Personal Sync** window is a standalone helper in CrossPointXT.
