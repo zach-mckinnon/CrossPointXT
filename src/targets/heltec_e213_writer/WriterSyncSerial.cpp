@@ -88,8 +88,22 @@ void WriterSyncSerial::beginPut(const std::string& name, const std::string& expe
 
 void WriterSyncSerial::finishPut() {
   if (payload_.size() != expectedLength_) { abort("incomplete"); return; }
-  if (destination_ == ".sync" && !e213::sync::parseManifest(payload_).isManaged()) {
-    abort("invalid-manifest"); return;
+  if (destination_ == ".sync") {
+    const auto parsed = e213::sync::parseManifest(payload_);
+    if (!parsed.isManaged()) {
+      const char* detail = "unknown";
+      switch (parsed.status) {
+        case e213::sync::ParseStatus::InvalidJson: detail = "invalid-json"; break;
+        case e213::sync::ParseStatus::UnsupportedVersion: detail = "version"; break;
+        case e213::sync::ParseStatus::WrongProvider: detail = "provider"; break;
+        case e213::sync::ParseStatus::MissingProjectId: detail = "project-id"; break;
+        case e213::sync::ParseStatus::InvalidScene: detail = "scene-binding"; break;
+        case e213::sync::ParseStatus::Ok: detail = "none"; break;
+      }
+      const std::string error = std::string("invalid-manifest|") + detail;
+      abort(error.c_str());
+      return;
+    }
   }
   // Recheck before commit, so another writer cannot silently replace data.
   std::string previous;
