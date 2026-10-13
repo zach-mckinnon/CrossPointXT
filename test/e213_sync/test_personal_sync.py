@@ -158,10 +158,10 @@ class PersonalSyncSafetyTests(unittest.TestCase):
         self.assertEqual(self.db.scene["content"], "written on laptop")
 
     def test_scene_title_to_safe_filename(self):
-        self.assertEqual(personal.suggest_filename("Part One / Caf\\u00e9 -- Arrival"),
+        self.assertEqual(personal.suggest_filename("Part One / Café -- Arrival"),
                          "Cafe -- Arrival.txt")
         self.assertTrue(bridge.NAME.fullmatch(personal.suggest_filename("Project / " + "A" * 70)))
-        self.assertEqual(personal.suggest_filename("No symbols / \🌙"), "New Scene.txt")
+        self.assertEqual(personal.suggest_filename("No symbols / 🌙"), "New Scene.txt")
 
     def test_importing_personal_sync_does_not_modify_plot_jot(self):
         self.assertTrue(callable(personal.sync_action))
