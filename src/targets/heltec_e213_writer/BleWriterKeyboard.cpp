@@ -88,7 +88,23 @@ void BleWriterKeyboard::begin() {
   bumpVersion();
 }
 
+void BleWriterKeyboard::pauseDiscoveryForUsb() {
+  if (usbDiscoveryPaused) return;
+  usbDiscoveryPaused = true;
+  NimBLEDevice::getScan()->stop();
+  scanning = false;
+  Serial.println("[E213 USB] Paused BLE discovery for serial transfer");
+}
+
+void BleWriterKeyboard::resumeDiscoveryAfterUsb() {
+  if (!usbDiscoveryPaused) return;
+  usbDiscoveryPaused = false;
+  if (!connected && !connecting) scanRequested = true;
+  Serial.println("[E213 USB] Resuming BLE discovery");
+}
+
 void BleWriterKeyboard::update() {
+  if (usbDiscoveryPaused) return;
   if (disconnectedEvent.exchange(false)) {
     if (lostReadyConnection.exchange(false)) reconnect.disconnected(millis());
     scanRequested = true;
