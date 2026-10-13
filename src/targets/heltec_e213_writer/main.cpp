@@ -639,6 +639,7 @@ void exitUsbSyncMode() {
   }
   usbSyncMode = false;
   manualUsbSyncMode = false;
+  serialSync.releaseHostSession();
   keyboard.resumeDiscoveryAfterUsb();
   Serial.println("E213 USB SYNC EXIT: keyboard scanning resumes.");
   if (keyboard.isConnected()) renderWriter(true);
@@ -744,7 +745,13 @@ void handleButtons() {
     return;
   }
   if (next == ButtonEvent::Long) {
-    enterUsbSyncMode(true); // B1 held 1.2 s enters USB transfer mode.
+    if (fileMenu) {
+      fileMenu = false; // Preserve the original B1-long file-picker exit.
+      if (keyboard.isConnected()) renderWriter();
+      else renderPairing();
+    } else {
+      enterUsbSyncMode(true); // B1 held 1.2 s enters USB transfer mode.
+    }
     return;
   }
   if (select == ButtonEvent::Long) {
