@@ -176,8 +176,8 @@ def import_scene(port: str, source: str, database: str, project_id: int,
         if len(docs) >= 200:
             raise ValueError("E213 has reached its 200-document limit.")
         manifest, previous = bridge.get_manifest(usb, project_id, project["name"])
-        if filename in manifest["scenes"]:
-            raise ValueError("That filename is already bound to a scene.")
+        if filename.casefold() in bridge.all_linked_filenames(manifest):
+            raise ValueError("That filename is already bound to a scene in a project.")
         if any(item["scene_id"] == scene_id for item in manifest["scenes"].values()):
             raise ValueError("Scene is already linked to an E213 document.")
 
@@ -274,24 +274,32 @@ def import_scenes(port: str, source: str, database: str, project_id: int,
             # scene distinct even when imported in a *later* batch, not just
             # when titles collide during this one batch. Filenames are stable
             # once linked; we never rename a user's existing document.
-            taken_linked = any(
-                saved.casefold() == filename.casefold()
-                and saved in manifest["scenes"]
-                for saved in available
-            )
+            taken_linked = filename.casefold() in bridge.all_linked_filenames(manifest)
             if filename.casefold() in reserved or taken_linked:
                 stem = suggested[:-4]
                 suffix = f" - {scene_id}"
                 filename = f"{stem[:44-len(suffix)].rstrip()}{suffix}.txt"
             if not bridge.NAME.fullmatch(filename):
                 raise ValueError(f"Cannot make a safe filename for scene #{scene_id}")
+            # Cross-project scenes can have identical titles and are stored in
+            # one flat SD folder for compatibility. Never reuse a filename
+            # already owned by another project; use a stable project+scene ID.
+            if filename.casefold() in (bridge.all_linked_filenames(manifest) |
+                                        reserved):
+                suffix = f" - {project_id}-{scene_id}"
+                filename = f"{suggested[:-4][:44-len(suffix)].rstrip()}{suffix}.txt"
+            if not bridge.NAME.fullmatch(filename):
+                raise ValueError("Could not create a distinct safe project filename")
+            if filename.casefold() in (bridge.all_linked_filenames(manifest) |
+                                        reserved):
+                raise ValueError("Cross-project filename collision; no file changed")
 
             previous_name = next((n for n in available
                                   if n.casefold() == filename.casefold()), None)
             existed = previous_name is not None
             if existed:
-                if previous_name in manifest["scenes"]:
-                    report.append(f"NAME TAKEN: {filename} linked to another scene; skipped #{scene_id}")
+                if filename.casefold() in bridge.all_linked_filenames(manifest):
+                    report.append(f"NAME TAKEN: {filename} linked to another project/scene; skipped #{scene_id}")
                     skipped += 1
                     continue
                 old_bytes, old_hash = usb.get(previous_name)
@@ -319,8 +327,7 @@ def import_scenes(port: str, source: str, database: str, project_id: int,
             staged_manifest = dict(manifest, scenes=proposed)
             set_chapter_outline(db, project_id, staged_manifest)
             bridge.validate_manifest(staged_manifest, project_id)
-            if len(json.dumps(staged_manifest, ensure_ascii=False, indent=2).encode("utf-8")) > bridge.MAX_MANIFEST:
-                raise ValueError("The E213 sync mapping file is full (16 KiB). No further scenes imported.")
+            bridge.manifest_payload(staged_manifest)  # Verify combined index size before copying text.
 
             if not existed:
                 usb.put(filename, content, "*")
@@ -376,8 +383,8 @@ def link_scene(port: str, source: str, database: str, project_id: int,
         if filename not in docs:
             raise ValueError("Selected E213 file is no longer present. Rescan.")
         manifest, previous = bridge.get_manifest(usb, project_id, db.get_project(project_id)["name"])
-        if filename in manifest["scenes"]:
-            raise ValueError("This document is already linked.")
+        if filename.casefold() in bridge.all_linked_filenames(manifest):
+            raise ValueError("This document is already linked to a Plot n Jot project.")
         if any(value["scene_id"] == scene_id for value in manifest["scenes"].values()):
             raise ValueError("This Plot n Jot scene is already linked to another document.")
         device_bytes, device_rev = usb.get(filename)
