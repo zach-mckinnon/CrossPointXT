@@ -12,7 +12,8 @@ import plot_jot_sync as bridge
 class DownloadSerial:
     def __init__(self, filename, content, *, corrupt_at=None, legacy=False,
                  stale_header_once=False, invalid_header_always=False,
-                 download_timeout_once_at=None, download_timeout_always_at=None):
+                 download_timeout_once_at=None, download_timeout_always_at=None,
+                 stale_unknown_during_reset=False):
         self.filename = filename
         self.content = content
         self.corrupt_at = corrupt_at
@@ -22,6 +23,7 @@ class DownloadSerial:
         self.download_timeout_once_at = download_timeout_once_at
         self.download_timeout_always_at = download_timeout_always_at
         self.sent_download_timeout = False
+        self.stale_unknown_during_reset = stale_unknown_during_reset
         self.requests = 0
         self.resets = 0
         self.offset = 0
@@ -38,6 +40,8 @@ class DownloadSerial:
         if cmd == "HELLO":
             self.resets += 1
             self.active = False
+            if self.stale_unknown_during_reset and self.sent_download_timeout:
+                self.lines.append(b"E213SYNC1|ERR|unknown-command\n")
             self.lines.append(b"E213SYNC1|READY\n")
         elif cmd == "GET2":
             self.requests += 1
@@ -144,6 +148,18 @@ class UsbGet2Tests(unittest.TestCase):
         self.assertEqual(serial.requests, 2)
         self.assertEqual(serial.resets, 1)
         self.assertEqual(serial.content, original)
+
+    def test_stale_unknown_command_before_ready_is_ignored_only_during_reset(self):
+        # Recreates the E213 message seen during Refresh Chapter Order.
+        original = b"my diary is not linked" * 55
+        serial = DownloadSerial(
+            "Voss meets up with the Girls.txt", original,
+            download_timeout_once_at=2, stale_unknown_during_reset=True)
+        text, digest = self.client(serial).get("Voss meets up with the Girls.txt")
+        self.assertEqual(text, original)
+        self.assertEqual(digest, bridge.checksum(original))
+        self.assertEqual(serial.requests, 2)
+        self.assertEqual(serial.resets, 1)
 
     def test_repeated_download_timeout_stops_after_one_clean_retry(self):
         serial = DownloadSerial("Diary.txt", b"original diary content",
