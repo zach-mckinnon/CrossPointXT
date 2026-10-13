@@ -167,12 +167,20 @@ class USB:
             self.send("PUT", name, expected, str(len(data)))
             if self.next(timeout=65) != ["READY"]:
                 raise RuntimeError("E213 refused PUT")
-            for offset in range(0, len(data), 192):
+            # IMPORTANT: ESP32-S3 USB CDC has a small firmware-side RX
+            # queue. The previous 192-byte binary frame expanded to a
+            # 272-byte ASCII line after Base64 and protocol framing, which
+            # could exceed a 256-byte receive buffer before loop() drained it.
+            # 24 raw bytes produce a 48-byte total framed USB line, fitting
+            # even a 64-byte queue. Stop-and-wait ACK keeps transfers lossless.
+            chunk_bytes = 24
+            for offset in range(0, len(data), chunk_bytes):
                 phase = "data"
-                self.send("DATA", base64.b64encode(data[offset:offset+192]).decode("ascii"))
+                self.send("DATA", base64.b64encode(
+                    data[offset:offset + chunk_bytes]).decode("ascii"))
                 if self.next(timeout=65) != ["ACK"]:
                     raise RuntimeError("E213 did not acknowledge data chunk")
-                sent = min(len(data), offset + 192)
+                sent = min(len(data), offset + chunk_bytes)
             phase = "commit"
             self.send("END")
             if self.next(timeout=65) != ["SAVED"]:
