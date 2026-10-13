@@ -11,6 +11,7 @@ class WriterSyncSerial {
   // Host activity enables USB SYNC screen and pauses BLE scanning.
   // A grace period covers users inspecting the PC UI between transfers.
   bool hostActive() const { return hostSeen_ && millis() - lastHostAt_ < 60000UL; }
+  void releaseHostSession() { hostSeen_ = false; }
   std::string takeUpdatedName();
  private:
   std::string incoming_;
