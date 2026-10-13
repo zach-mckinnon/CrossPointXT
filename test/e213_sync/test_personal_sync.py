@@ -43,6 +43,15 @@ class FakeUSB:
 class FakeDatabase:
     def __init__(self):
         self.scene = {"id": 101, "chapter_id": 7, "content": "written on laptop"}
+        self.other_scene = {"id": 102, "chapter_id": 7, "content": "another scene"}
+    def get_scene(self, scene_id):
+        return {101: self.scene, 102: self.other_scene}.get(scene_id)
+    def get_full_manuscript_data(self, project_id):
+        assert project_id == 42
+        return [{"title": "Chapter 1", "scenes": [
+            {"id": 101, "title": "Scene 1"},
+            {"id": 102, "title": "Scene 2"}
+        ]}]
     def get_project(self, number):
         return {"id": 42, "name": "Test"} if number == 42 else None
     def update_scene_content(self, number, content):
@@ -60,7 +69,7 @@ class PersonalSyncSafetyTests(unittest.TestCase):
         self.patchers = [
             patch.object(personal, "db_manager", return_value=self.db),
             patch.object(personal, "with_usb", side_effect=lambda _port, task: task(self.usb)),
-            patch.object(personal.bridge, "db_scene", side_effect=lambda _db, _project, _scene, *_args: self.db.scene),
+            patch.object(personal.bridge, "db_scene", side_effect=lambda _db, _project, _scene, *_args: self.db.get_scene(_scene)),
             patch.object(personal, "BACKUP_PATH", Path(self.tmp.name)),
         ]
         for p in self.patchers:
@@ -156,6 +165,65 @@ class PersonalSyncSafetyTests(unittest.TestCase):
                 personal.import_scene(*self.args, 101, "Corrupt.txt")
         self.assertNotIn(".sync", self.usb.data)
         self.assertEqual(self.db.scene["content"], "written on laptop")
+
+    def test_multi_import_two_scenes_and_preserves_existing_draft(self):
+        original = self.usb.data["Chapter One.txt"]
+        report = personal.import_scenes(*self.args, [101, 102])
+        self.assertIn("2 linked", report)
+        self.assertEqual(self.usb.data["Scene 1.txt"], b"written on laptop")
+        self.assertEqual(self.usb.data["Scene 2.txt"], b"another scene")
+        self.assertEqual(self.usb.data["Chapter One.txt"], original)
+        manifest = __import__("json").loads(self.usb.data[".sync"])
+        self.assertEqual(manifest["scenes"]["Scene 1.txt"]["scene_id"], 101)
+        self.assertEqual(manifest["scenes"]["Scene 2.txt"]["scene_id"], 102)
+        self.assertEqual(self.db.scene["content"], "written on laptop")
+        self.assertEqual(self.db.other_scene["content"], "another scene")
+
+    def test_multi_import_recovers_identical_orphan_without_overwriting(self):
+        self.usb.data["Scene 1.txt"] = b"written on laptop"
+        before = self.usb.data["Scene 1.txt"]
+        report = personal.import_scenes(*self.args, [101])
+        self.assertIn("RECOVERED", report)
+        self.assertIn("1 linked", report)
+        self.assertEqual(self.usb.data["Scene 1.txt"], before)
+        self.assertIn("Scene 1.txt", __import__("json").loads(self.usb.data[".sync"])["scenes"])
+
+    def test_multi_import_refuses_orphan_with_different_contents(self):
+        self.usb.data["Scene 1.txt"] = b"local edits must be protected"
+        report = personal.import_scenes(*self.args, [101])
+        self.assertIn("DIFFERENT CONTENT", report)
+        self.assertIn("0 linked, 1 skipped", report)
+        self.assertEqual(self.usb.data["Scene 1.txt"], b"local edits must be protected")
+        self.assertNotIn(".sync", self.usb.data)
+
+    def test_multi_import_can_resume_after_successful_import(self):
+        personal.import_scenes(*self.args, [101])
+        report = personal.import_scenes(*self.args, [101, 102])
+        self.assertIn("ALREADY LINKED", report)
+        self.assertIn("1 linked, 1 skipped", report)
+        self.assertEqual(__import__("json").loads(self.usb.data[".sync"])["scenes"]["Scene 2.txt"]["scene_id"], 102)
+
+    def test_multi_import_reports_actual_manifest_rejection(self):
+        old_put = self.usb.put
+        def fail_manifest(name, content, expected):
+            if name == ".sync":
+                raise RuntimeError("E213 refused command: invalid-manifest")
+            return old_put(name, content, expected)
+        with patch.object(self.usb, "put", side_effect=fail_manifest):
+            with self.assertRaisesRegex(RuntimeError, "invalid-manifest"):
+                personal.import_scenes(*self.args, [101])
+        self.assertEqual(self.usb.data["Scene 1.txt"], b"written on laptop")
+        self.assertNotIn(".sync", self.usb.data)
+
+    def test_single_import_reports_underlying_manifest_error(self):
+        old_put = self.usb.put
+        def fail_manifest(name, content, expected):
+            if name == ".sync":
+                raise RuntimeError("E213 refused command: write-failed")
+            return old_put(name, content, expected)
+        with patch.object(self.usb, "put", side_effect=fail_manifest):
+            with self.assertRaisesRegex(RuntimeError, "write-failed"):
+                personal.import_scene(*self.args, 101, "Named Scene.txt")
 
     def test_scene_title_to_safe_filename(self):
         self.assertEqual(personal.suggest_filename("Part One / Café -- Arrival"),
