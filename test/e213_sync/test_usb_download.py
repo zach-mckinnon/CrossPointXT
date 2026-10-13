@@ -115,8 +115,8 @@ class UsbGet2Tests(unittest.TestCase):
                                 invalid_header_always=True)
         with self.assertRaisesRegex(
             RuntimeError,
-            r"invalid header for Chats and Skimms\\.txt "
-            r"\\(received READY, 1 field\\(s\\); retry also failed\\)"
+            r"invalid header for Chats and Skimms\.txt "
+            r"\(received READY, 1 field\(s\); retry also failed\)"
         ):
             self.client(serial).get("Chats and Skimms.txt")
         self.assertEqual(serial.requests, 2)
