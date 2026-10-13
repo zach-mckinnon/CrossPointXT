@@ -1,0 +1,134 @@
+"""GET2 regression: reliable host-acknowledged USB downloads."""
+import base64
+import hashlib
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools" / "e213-sync"))
+import plot_jot_sync as bridge
+
+
+class DownloadSerial:
+    def __init__(self, filename, content, *, corrupt_at=None, legacy=False):
+        self.filename = filename
+        self.content = content
+        self.corrupt_at = corrupt_at
+        self.legacy = legacy
+        self.offset = 0
+        self.acks = 0
+        self.sent = []
+        self.response_frames = []
+        self.lines = []
+        self.active = False
+
+    def write(self, data):
+        line = data.decode("ascii").strip()
+        self.sent.append(line)
+        cmd, *args = line[len(bridge.PREFIX):].split("|")
+        if cmd == "HELLO":
+            self.active = False
+            self.lines.append(b"E213SYNC1|READY\n")
+        elif cmd == "GET2":
+            if self.legacy:
+                self.lines.append(b"E213SYNC1|ERR|unknown-command\n")
+            elif args == [self.filename]:
+                self.active = True
+                self.offset = 0
+                self.acks = 0
+                digest = hashlib.sha256(self.content).hexdigest()
+                self.lines.append(
+                    f"E213SYNC1|BEGIN|{len(self.content)}|{digest}\n".encode()
+                )
+            else:
+                self.lines.append(b"E213SYNC1|ERR|not-found\n")
+        elif cmd == "ACK":
+            if not self.active:
+                raise AssertionError("ACK without active download")
+            self.acks += 1
+            if self.offset == len(self.content):
+                self.lines.append(b"E213SYNC1|END\n")
+                self.active = False
+            else:
+                raw = self.content[self.offset:self.offset + 24]
+                payload = base64.b64encode(raw).decode("ascii")
+                if self.corrupt_at == self.acks:
+                    payload = "a" * 113  # Reproduce the user's malformed Base64
+                packet = f"E213SYNC1|DATA|{payload}\n".encode("ascii")
+                self.response_frames.append(len(packet))
+                self.lines.append(packet)
+                self.offset += len(raw)
+        else:
+            raise AssertionError(f"unexpected command {cmd}")
+        return len(data)
+
+    def flush(self):
+        pass
+
+    def readline(self):
+        return self.lines.pop(0) if self.lines else b""
+
+
+class UsbGet2Tests(unittest.TestCase):
+    @staticmethod
+    def client(serial):
+        device = bridge.USB.__new__(bridge.USB)
+        device.serial = serial
+        return device
+
+    def test_3005_byte_scene_round_trip_and_every_data_line_below_64_bytes(self):
+        text = b"Browsing the Web\n" + b"a" * (3005 - len(b"Browsing the Web\n"))
+        serial = DownloadSerial("Browsing the Web.txt", text)
+        received, digest = self.client(serial).get("Browsing the Web.txt")
+        self.assertEqual(received, text)
+        self.assertEqual(digest, bridge.checksum(text))
+        self.assertEqual(serial.acks, 127)
+        self.assertEqual(len(serial.response_frames), 126)
+        self.assertTrue(all(0 < n <= 64 for n in serial.response_frames))
+        self.assertIn("E213SYNC1|GET2|Browsing the Web.txt", serial.sent)
+        self.assertNotIn("E213SYNC1|GET|Browsing the Web.txt", serial.sent)
+
+    def test_empty_scene_returns_empty_and_one_end_ack(self):
+        serial = DownloadSerial("Empty.txt", b"")
+        self.assertEqual(self.client(serial).get("Empty.txt")[0], b"")
+        self.assertEqual(serial.acks, 1)
+
+    def test_corrupt_base64_fails_closed_and_never_returns_malformed_bytes(self):
+        serial = DownloadSerial("Scene.txt", b"original" * 400, corrupt_at=3)
+        with self.assertRaisesRegex(RuntimeError, r"Scene.txt: corrupt Base64 DATA after 48/3200 bytes"):
+            self.client(serial).get("Scene.txt")
+        self.assertEqual(serial.acks, 3)
+
+    def test_old_firmware_yields_flash_instruction_not_corrupt_legacy_fallback(self):
+        serial = DownloadSerial("Scene.txt", b"original", legacy=True)
+        with self.assertRaisesRegex(RuntimeError, "firmware is too old"):
+            self.client(serial).get("Scene.txt")
+        self.assertFalse(any("|GET|" in frame for frame in serial.sent))
+
+    def test_large_document_uses_flow_control_without_overwriting(self):
+        content = (b"The writing continues.\n" * 6200)[:128 * 1024]
+        serial = DownloadSerial("Novel.txt", content)
+        copy, digest = self.client(serial).get("Novel.txt")
+        self.assertEqual(copy, content)
+        self.assertEqual(digest, bridge.checksum(content))
+        self.assertTrue(max(serial.response_frames) <= 64)
+
+    def test_rejects_bad_checksum_after_complete_download(self):
+        serial = DownloadSerial("Draft.txt", b"draft content")
+        original_write = serial.write
+
+        def forged_write(data):
+            rv = original_write(data)
+            if data.decode("ascii").startswith("E213SYNC1|GET2|"):
+                serial.lines[0] = (
+                    f"E213SYNC1|BEGIN|{len(serial.content)}|{'0'*64}\n"
+                ).encode()
+            return rv
+
+        serial.write = forged_write
+        with self.assertRaisesRegex(RuntimeError, "SHA-256 or length verification failed"):
+            self.client(serial).get("Draft.txt")
+
+
+if __name__ == "__main__":
+    unittest.main()
