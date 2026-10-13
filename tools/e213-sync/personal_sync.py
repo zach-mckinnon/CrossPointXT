@@ -116,6 +116,25 @@ def link_scene(port: str, source: str, database: str, project_id: int,
     return with_usb(port, link)
 
 
+def unlink_scene(port: str, source: str, database: str, project_id: int, filename: str):
+    """Remove the filename-to-scene link; keep both copies of the prose."""
+    db = db_manager(source, database)
+    project = db.get_project(project_id)
+    if not project:
+        raise ValueError("Project not found.")
+    def unlink(usb):
+        manifest, previous = bridge.get_manifest(usb, project_id, project["name"])
+        if filename not in manifest["scenes"]:
+            raise ValueError("Selected document is not linked.")
+        BACKUP_PATH.mkdir(parents=True, exist_ok=True)
+        backup = bridge.backup_device(usb, BACKUP_PATH)
+        del manifest["scenes"][filename]
+        bridge.put_manifest(usb, manifest, previous)
+        return (f"Unlinked {filename}. Both the E213 document and Plot n Jot scene remain unchanged.\n"
+                f"SD backup: {backup}\nYou may now rename this document on the E213.")
+    return with_usb(port, unlink)
+
+
 def sync_action(port: str, source: str, database: str, project_id: int, apply: bool):
     db = db_manager(source, database)
     project = db.get_project(project_id)
@@ -240,6 +259,8 @@ class PersonalSyncApp:
                          row=1, column=1, padx=(12, 6), pady=(3, 0))
         ttk.Button(mapping, text="Link selected", command=self.link).grid(
             row=1, column=2, padx=(8, 0))
+        ttk.Button(mapping, text="Unlink", command=self.unlink).grid(
+            row=1, column=3, padx=(8, 0))
 
         actions = ttk.Frame(outer)
         actions.grid(row=9, column=0, columnspan=3, sticky="w", pady=(4, 10))
@@ -396,6 +417,26 @@ class PersonalSyncApp:
             self.scan()
         self._run("Backing up SD and linking scene…",
                   lambda: link_scene(*args, filename, scene_id, prefer), done)
+
+    def unlink(self):
+        args = self._args_or_message()
+        if not args: return
+        picked = self.tree.selection()
+        if not picked:
+            messagebox.showinfo("Unlink a document", "Select a linked document from the E213 list.")
+            return
+        filename = picked[0]
+        if not messagebox.askyesno("Unlink document",
+                f"Remove the Plot n Jot scene mapping for {filename}?\n\n"
+                "Neither document will be deleted or overwritten.\n"
+                "You can then rename the SD document on the E213."):
+            return
+        def done(output):
+            self._write(output)
+            self.status.set("Unlinked without deleting either document.")
+            self.scan()
+        self._run("Backing up and unlinking…",
+                  lambda: unlink_scene(*args, filename), done)
 
     def preview(self):
         args = self._args_or_message()
