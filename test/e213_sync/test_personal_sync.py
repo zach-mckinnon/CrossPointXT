@@ -44,14 +44,17 @@ class FakeDatabase:
     def __init__(self):
         self.scene = {"id": 101, "chapter_id": 7, "content": "written on laptop"}
         self.other_scene = {"id": 102, "chapter_id": 7, "content": "another scene"}
+        self.layout = None
     def get_scene(self, scene_id):
         return {101: self.scene, 102: self.other_scene}.get(scene_id)
     def get_full_manuscript_data(self, project_id):
         assert project_id == 42
-        return [{"title": "Chapter 1", "scenes": [
-            {"id": 101, "title": "Scene 1"},
-            {"id": 102, "title": "Scene 2"}
-        ]}]
+        return self.layout if self.layout is not None else [{
+            "title": "Chapter 1", "scenes": [
+                {"id": 101, "title": "Scene 1"},
+                {"id": 102, "title": "Scene 2"}
+            ]
+        }]
     def get_project(self, number):
         return {"id": 42, "name": "Test"} if number == 42 else None
     def update_scene_content(self, number, content):
@@ -224,6 +227,61 @@ class PersonalSyncSafetyTests(unittest.TestCase):
         with patch.object(self.usb, "put", side_effect=fail_manifest):
             with self.assertRaisesRegex(RuntimeError, "write-failed"):
                 personal.import_scene(*self.args, 101, "Named Scene.txt")
+
+    def test_import_persists_desktop_chapter_scene_order_not_filename_order(self):
+        self.db.layout = [
+            {"title": "Chapter 2", "scenes": [{"id": 102, "title": "Scene 2"}]},
+            {"title": "Chapter 1", "scenes": [{"id": 101, "title": "Scene 1"}]}
+        ]
+        personal.import_scenes(*self.args, [101, 102])
+        mapping = __import__("json").loads(self.usb.data[".sync"])
+        self.assertEqual(mapping["chapters"], [
+            {"title": "Chapter 2", "files": ["Scene 2.txt"]},
+            {"title": "Chapter 1", "files": ["Scene 1.txt"]}
+        ])
+        self.assertEqual(self.usb.data["Scene 1.txt"], b"written on laptop")
+
+    def test_reorder_metadata_preserves_revisions_and_prose(self):
+        personal.import_scenes(*self.args, [101, 102])
+        previous = self.usb.data.copy()
+        previous_manifest = __import__("json").loads(previous[".sync"])
+        self.db.layout = [{
+            "title": "Reordered chapter", "scenes": [
+                {"id": 102, "title": "Scene 2"},
+                {"id": 101, "title": "Scene 1"}
+            ]
+        }]
+        result = personal.refresh_chapter_order(*self.args)
+        self.assertIn("Updated 1 chapter", result)
+        after_manifest = __import__("json").loads(self.usb.data[".sync"])
+        self.assertEqual(after_manifest["chapters"], [{
+            "title": "Reordered chapter",
+            "files": ["Scene 2.txt", "Scene 1.txt"]
+        }])
+        self.assertEqual(after_manifest["scenes"], previous_manifest["scenes"])
+        self.assertEqual(self.usb.data["Scene 1.txt"], previous["Scene 1.txt"])
+        self.assertEqual(self.usb.data["Scene 2.txt"], previous["Scene 2.txt"])
+        self.assertIn("already up to date", personal.refresh_chapter_order(*self.args))
+
+    def test_existing_link_can_add_outline_without_importing_again(self):
+        personal.link_scene(*self.args, "Chapter One.txt", 101, "device")
+        manifest = __import__("json").loads(self.usb.data[".sync"])
+        self.assertEqual(manifest["chapters"], [
+            {"title": "Chapter 1", "files": ["Chapter One.txt"]}
+        ])
+
+    def test_sync_refreshes_order_even_when_manuscripts_unchanged(self):
+        personal.import_scenes(*self.args, [101, 102])
+        previous = self.usb.data.copy()
+        self.db.layout = [
+            {"title": "New First", "scenes": [{"id": 102, "title": "Scene 2"}]},
+            {"title": "New Second", "scenes": [{"id": 101, "title": "Scene 1"}]}
+        ]
+        output = personal.sync_action(*self.args, apply=True)
+        self.assertIn("Refreshed E213 chapter and scene order", output)
+        self.assertEqual(self.usb.data["Scene 1.txt"], previous["Scene 1.txt"])
+        self.assertEqual(self.usb.data["Scene 2.txt"], previous["Scene 2.txt"])
+        self.assertEqual(__import__("json").loads(self.usb.data[".sync"])["chapters"][0]["title"], "New First")
 
     def test_scene_title_to_safe_filename(self):
         self.assertEqual(personal.suggest_filename("Part One / Café -- Arrival"),
