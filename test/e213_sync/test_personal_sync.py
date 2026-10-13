@@ -114,6 +114,55 @@ class PersonalSyncSafetyTests(unittest.TestCase):
         self.assertEqual(manifest["scenes"]["Chapter One.txt"]["revision"],
                          bridge.checksum(b"written on the E213"))
 
+    def test_import_existing_scene_creates_txt_on_card_not_on_desktop(self):
+        before = self.db.scene["content"]
+        msg = personal.import_scene(*self.args, 101, "The Arrival.txt")
+        self.assertIn("IMPORTED", msg)
+        self.assertEqual(self.usb.data["The Arrival.txt"], before.encode("utf-8"))
+        self.assertEqual(self.db.scene["content"], before)
+        manifest = __import__("json").loads(self.usb.data[".sync"])
+        self.assertEqual(manifest["scenes"]["The Arrival.txt"]["scene_id"], 101)
+        self.assertEqual(manifest["scenes"]["The Arrival.txt"]["revision"],
+                         bridge.checksum(before.encode("utf-8")))
+        self.assertTrue(list(Path(self.tmp.name).rglob("Chapter One.txt")))
+
+    def test_import_refuses_existing_filename_and_never_overwrites_it(self):
+        initial = self.usb.data["Chapter One.txt"]
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            personal.import_scene(*self.args, 101, "Chapter One.txt")
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            personal.import_scene(*self.args, 101, "chapter one.txt")
+        self.assertEqual(self.usb.data["Chapter One.txt"], initial)
+        self.assertNotIn(".sync", self.usb.data)
+
+    def test_import_prevents_two_files_linked_to_the_same_scene(self):
+        personal.import_scene(*self.args, 101, "The Arrival.txt")
+        with self.assertRaisesRegex(ValueError, "already linked"):
+            personal.import_scene(*self.args, 101, "Second File.txt")
+        self.assertNotIn("Second File.txt", self.usb.data)
+
+    def test_import_rejects_oversized_scenes_before_communications(self):
+        self.db.scene["content"] = "x" * (bridge.MAX_FILE + 1)
+        before = self.usb.data.copy()
+        with self.assertRaisesRegex(ValueError, "per-document limit"):
+            personal.import_scene(*self.args, 101, "Long Scene.txt")
+        self.assertEqual(self.usb.data, before)
+
+    def test_import_verifies_sd_before_writing_manifest(self):
+        def corrupt(name, content, previous):
+            self.usb.data[name] = b"wrong content"
+        with patch.object(self.usb, "put", side_effect=corrupt):
+            with self.assertRaisesRegex(RuntimeError, "readback failed"):
+                personal.import_scene(*self.args, 101, "Corrupt.txt")
+        self.assertNotIn(".sync", self.usb.data)
+        self.assertEqual(self.db.scene["content"], "written on laptop")
+
+    def test_scene_title_to_safe_filename(self):
+        self.assertEqual(personal.suggest_filename("Part One / Caf\\u00e9 -- Arrival"),
+                         "Cafe -- Arrival.txt")
+        self.assertTrue(bridge.NAME.fullmatch(personal.suggest_filename("Project / " + "A" * 70)))
+        self.assertEqual(personal.suggest_filename("No symbols / \\U0001f319"), "New Scene.txt")
+
     def test_importing_personal_sync_does_not_modify_plot_jot(self):
         self.assertTrue(callable(personal.sync_action))
         self.assertTrue(callable(personal.default_db_path))
