@@ -107,10 +107,48 @@ Replace COM10 with your actual E213 port. Close the serial monitor before sync.
 ## Keyboard controls
 
 - Ctrl+O: open/close SD document picker; arrows navigate, Enter opens, Esc exits
-- Ctrl+N: create a new numbered draft on SD
+- Ctrl+R: rename active or file-picker-selected draft; linked Plot n Jot files must be unlinked first
+- Ctrl+N: open a title editor; Enter creates a named `.txt` file (blank title makes next Draft-NNN); Esc cancels
 - Ctrl+S: save to SD; autosave still runs after 1.8 seconds idle
 - Reboot restores the last document via SD /.active
 - A failed save blocks switching documents; never silently fall back to flash
+
+## Personal Linux desktop sync window (Plot n Jot stays unchanged)
+
+The optional **E213 Personal Sync** window is a standalone helper in CrossPointXT.
+It connects directly to the E213's USB port and your existing Plot n Jot
+SQLite database. It does not need a Plot n Jot source checkout, server,
+cloud account, extension, or a change to the Plot n Jot application.
+
+Install a Linux application-menu shortcut once, from your CrossPointXT dev checkout:
+
+```bash
+git pull --ff-only origin dev
+bash tools/e213-sync/install-linux-launcher.sh
+```
+
+Then open **E213 Personal Sync** from the Linux application menu instead of
+running routine terminal commands. The launcher creates a separate Python
+virtual environment and installs PySerial on first run. If your distro lacks
+Tkinter or venv, install `python3-tk` or `python3-venv` first.
+
+**Personal workflow:**
+
+1. Connect the E213 by USB, keep it awake, close any serial monitor.
+2. Confirm the Plot n Jot database path. Linux default:
+   `~/.local/share/PlotAndJot/writer_data.db` (honors XDG_DATA_HOME).
+3. Click Detect, Load projects, choose your project, then Scan E213.
+4. Select an SD document and a Plot n Jot scene; choose which copy wins at
+   initial sync and click Link selected. Linking alone does not change prose.
+5. Preview changes before choosing Sync now. Close Plot n Jot first.
+6. The tool automatically backs up the E213 SD drafts, preserves conflicting
+   edits, and backs up the database before pushing text into Plot n Jot.
+7. To rename a linked file, use Unlink first (nothing deleted), Ctrl+R on
+   the E213 to rename it, then link the new filename in the personal GUI.
+
+Both app preferences and backups are local; no telemetry or server.
+The separate GUI reuses the existing revision-checked USB sync protocol.
+The GUI has not yet been tested end-to-end on the physical E213.
 
 ## USB Plot & Jot synchronization (SD remains inserted)
 
@@ -290,7 +328,7 @@ New in dev (hardware keyboard testing still required):
 | Ctrl+Home / Ctrl+End | Beginning / end of entire document |
 | Hold Backspace / Delete | Initial press; auto repeat after 450 ms, faster after one and two seconds |
 | F11 or Ctrl+Shift+F | Toggle focus mode, hide header/footer and expand from 9 to 13 rows |
-| Ctrl+S / Ctrl+N / Ctrl+O | Save, create draft, open file picker |
+| Ctrl+S / Ctrl+N / Ctrl+O / Ctrl+R | Save, name a new document, open picker, rename document |
 
 Undo history stores changes, not manuscript snapshots; it is bounded to 48
 operations and approximately 32 KiB per draft. Switching drafts or replacing
@@ -313,7 +351,7 @@ battery-connector polarity is required; never apply 5V to the battery jack.
 Still missing versus mature dedicated writerdecks: persistent sleep/wake,
 measured battery runtime, fast low-ghosting incremental e-ink refresh,
 comfortable Unicode/proportional fonts, selection/clipboard, search/replace,
-filename editing, robust power-loss tests, and validated Plot & Jot sync.
+robust power-loss tests and validated Plot & Jot sync.
 
 
 ## Automatic Bluetooth keyboard reconnect (ported from working v1_1)
