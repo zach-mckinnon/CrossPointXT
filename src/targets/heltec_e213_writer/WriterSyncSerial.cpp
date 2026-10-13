@@ -110,6 +110,8 @@ void WriterSyncSerial::onLine(const std::string& line) {
   if (line.rfind(kPrefix, 0) != 0) return;
   const auto args = fields(line.substr(sizeof(kPrefix)-1));
   if (args.empty()) return;
+  hostSeen_ = true;
+  lastHostAt_ = millis();
   // USB is transport only: every GET/PUT/LIST must target mounted SD storage.
   if (!writerfiles::ready()) {
     emit("ERR|sd-unavailable");
