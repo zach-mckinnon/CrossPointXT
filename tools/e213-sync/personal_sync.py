@@ -18,6 +18,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import plot_jot_sync as bridge
+from plot_db_local import LocalPlotDatabase
 
 CONFIG_PATH = Path.home() / ".config" / "e213-sync" / "personal.json"
 BACKUP_PATH = Path.home() / ".local" / "share" / "e213-sync" / "backups"
@@ -35,17 +36,9 @@ def default_plot_source() -> Path:
 
 
 def db_manager(source: str, database: str):
-    """Refuse to create an empty DB or import from the wrong Plot n Jot copy."""
-    project = Path(source).expanduser().resolve()
-    target = Path(database).expanduser().resolve()
-    if not (project / "src/writer/database/database.py").is_file():
-        raise FileNotFoundError("Choose the local plot-and-jot-source directory (the one containing src/writer).")
-    if not target.is_file():
-        raise FileNotFoundError(f"Plot n Jot database not found: {target}. Check XDG_DATA_HOME or choose your DB.")
-    if str(project) not in sys.path:
-        sys.path.insert(0, str(project))
-    from src.writer.database.database import DatabaseManager
-    return DatabaseManager(target)
+    # The personal GUI needs only the installed Plot n Jot SQLite database.
+    # The source argument is retained for internal bridge compatibility.
+    return LocalPlotDatabase(database)
 
 
 def list_projects(source: str, database: str):
@@ -188,7 +181,7 @@ class PersonalSyncApp:
         self.scenes: list[tuple[int, str]] = []
         self.preview_key: tuple | None = None
         saved = read_settings()
-        self.source = tk.StringVar(value=saved.get("source", str(default_plot_source())))
+        self.source = tk.StringVar(value="")
         self.database = tk.StringVar(value=saved.get("database", str(default_db_path())))
         self.port = tk.StringVar(value=saved.get("port", ""))
         self.project_choice = tk.StringVar()
@@ -208,12 +201,9 @@ class PersonalSyncApp:
         ttk.Label(outer, text="Works outside Plot n Jot. No cloud or app modifications.").grid(
             row=1, column=0, columnspan=3, sticky="w", pady=(0, 12))
 
-        ttk.Label(outer, text="Plot n Jot source").grid(row=2, column=0, sticky="w")
-        ttk.Entry(outer, textvariable=self.source).grid(row=2, column=1, sticky="ew", padx=8)
-        ttk.Button(outer, text="Browse…", command=self.browse_source).grid(row=2, column=2)
-        ttk.Label(outer, text="Manuscript database").grid(row=3, column=0, sticky="w", pady=4)
-        ttk.Entry(outer, textvariable=self.database).grid(row=3, column=1, sticky="ew", padx=8)
-        ttk.Button(outer, text="Browse…", command=self.browse_database).grid(row=3, column=2)
+        ttk.Label(outer, text="Plot n Jot database").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Entry(outer, textvariable=self.database).grid(row=2, column=1, sticky="ew", padx=8)
+        ttk.Button(outer, text="Browse…", command=self.browse_database).grid(row=2, column=2)
 
         controls = ttk.Frame(outer)
         controls.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(12, 8))
@@ -283,8 +273,7 @@ class PersonalSyncApp:
         try:
             CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
             CONFIG_PATH.write_text(json.dumps({
-                "source": self.source.get(), "database": self.database.get(),
-                "port": self.port.get()
+                "database": self.database.get(), "port": self.port.get()
             }, indent=2), encoding="utf-8")
         except OSError:
             pass  # Sync can still work without retaining local settings.
