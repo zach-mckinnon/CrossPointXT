@@ -381,13 +381,6 @@ bool switchDraft(const std::string& name) {
   return true;
 }
 
-bool createDraft() {
-  if (!storageReady || (dirty && !saveDraft())) return false;
-  const std::string name = writerfiles::nextName();
-  if (name.empty() || !writerfiles::save(name, "")) return false;
-  return switchDraft(name);
-}
-
 void markEdited() {
   dirty = true;
   renderPending = true;
