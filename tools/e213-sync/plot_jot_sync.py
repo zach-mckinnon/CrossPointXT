@@ -137,19 +137,54 @@ class USB:
         # overflowing some ESP32-S3 CDC queues. GET2 sends one 48-byte DATA
         # line only after the host ACKs each previous line. It requires the
         # matching E213 firmware; don't silently fall back to corrupt GET.
-        self.send("GET2", name)
-        try:
-            first = self.next()
-        except RuntimeError as exc:
-            if "unknown-command" in str(exc):
+        # The first read can occasionally contain a delayed READY or END
+        # from a previous serial command. If so, reset ONLY the uncommitted
+        # in-RAM GET2 state with HELLO and retry one time. Both requests
+        # are read-only; neither touches SD documents or mappings.
+        unexpected = None
+        for attempt in range(2):
+            self.send("GET2", name)
+            try:
+                first = self.next()
+            except RuntimeError as exc:
+                if "unknown-command" in str(exc):
+                    raise RuntimeError(
+                        "E213 firmware is too old for reliable USB downloads. "
+                        "Flash the latest dev heltec_e213_writer firmware, then "
+                        "reopen E213 Personal Sync. No SD format is needed."
+                    ) from exc
+                raise
+            if len(first) == 3 and first[0] == "BEGIN" and HASH.fullmatch(first[2]):
+                break
+            # Do not expose a document's Base64 bytes in error dialogs.
+            kind = (first[0][:24] if first else "<empty>")
+            unexpected = f"{kind}, {len(first)} field(s)"
+            if attempt == 1:
                 raise RuntimeError(
-                    "E213 firmware is too old for reliable USB downloads. "
-                    "Flash the latest dev heltec_e213_writer firmware, then "
-                    "reopen E213 Personal Sync. No SD format is needed."
-                ) from exc
-            raise
-        if len(first) != 3 or first[0] != "BEGIN" or not HASH.fullmatch(first[2]):
-            raise RuntimeError(f"E213 GET2 returned an invalid header for {name}")
+                    f"E213 GET2 returned an invalid header for {name} "
+                    f"(received {unexpected}; retry also failed). "
+                    "Nothing was written to the SD card. "
+                    "Keep the original files and report this diagnostic."
+                )
+            self.send("HELLO")
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    reset_reply = self.next(timeout=max(1, deadline - time.monotonic()))
+                except TimeoutError as exc:
+                    raise RuntimeError(
+                        f"E213 GET2 returned an invalid header for {name} "
+                        f"(received {unexpected}); HELLO reset timed out. "
+                        "Neither document nor mapping was modified."
+                    ) from exc
+                if reset_reply == ["READY"]:
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"E213 GET2 returned an invalid header for {name} "
+                        f"(received {unexpected}); reset returned unexpected messages. "
+                        "Neither document nor mapping was modified."
+                    )
         try:
             length = int(first[1])
         except ValueError as exc:
