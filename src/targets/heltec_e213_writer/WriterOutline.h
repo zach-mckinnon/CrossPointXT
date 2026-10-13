@@ -36,4 +36,45 @@ inline std::vector<Section> organize(const std::vector<std::string>& cardFiles,
   return organized;
 }
 
+
+struct Project {
+  std::string title;
+  std::vector<Section> chapters;
+  bool personal = false;
+};
+
+// Projects and chapters are display-only folders. The actual SD /drafts
+// files and their device/desktop sync revisions never move or change.
+// A file may appear only once, even if metadata is inconsistent.
+inline std::vector<Project> organizeProjects(
+    const std::vector<std::string>& cardFiles,
+    const std::vector<Project>& orderedProjects) {
+  std::vector<Project> results;
+  std::vector<std::string> used;
+  for (const Project& source : orderedProjects) {
+    if (source.personal) continue;
+    Project selected{source.title.empty() ? "Untitled project" : source.title,
+                     {}, false};
+    for (const Section& group : source.chapters) {
+      Section chapter{group.title.empty() ? "Untitled chapter" : group.title, {}};
+      for (const std::string& name : group.files) {
+        if (std::find(cardFiles.begin(), cardFiles.end(), name) != cardFiles.end()
+            && std::find(used.begin(), used.end(), name) == used.end()) {
+          chapter.files.push_back(name);
+          used.push_back(name);
+        }
+      }
+      if (!chapter.files.empty()) selected.chapters.push_back(chapter);
+    }
+    if (!selected.chapters.empty()) results.push_back(selected);
+  }
+  Project personal{"My Documents", {Section{"My Documents", {}}}, true};
+  for (const std::string& name : cardFiles) {
+    if (std::find(used.begin(), used.end(), name) == used.end())
+      personal.chapters[0].files.push_back(name);
+  }
+  results.insert(results.begin(), personal);
+  return results;
+}
+
 }  // namespace writeroutline
