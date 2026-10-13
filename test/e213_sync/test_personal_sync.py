@@ -299,6 +299,41 @@ class PersonalSyncSafetyTests(unittest.TestCase):
         self.assertEqual(self.usb.data["Scene 2.txt"], previous["Scene 2.txt"])
         self.assertEqual(__import__("json").loads(self.usb.data[".sync"])["chapters"][0]["title"], "New First")
 
+    def test_refresh_reuses_verified_backup_without_redownloading_diary(self):
+        self.usb.data["Diary.txt"] = b"personal diary" * 500
+        personal.import_scenes(*self.args, [101, 102])
+        existing = bridge.backup_device(self.usb, Path(self.tmp.name))
+        self.db.layout = [{
+            "title": "Reordered",
+            "scenes": [{"id": 102, "title": "Scene 2"},
+                       {"id": 101, "title": "Scene 1"}]
+        }]
+        calls = []
+        original_get = self.usb.get
+
+        def record(name):
+            calls.append(name)
+            return original_get(name)
+
+        with patch.object(self.usb, "get", side_effect=record):
+            result = personal.refresh_chapter_order(*self.args)
+        self.assertIn(str(existing), result)
+        # .sync is read to confirm the manifest. Scene files and unsynced
+        # diary aren't re-downloaded after an already verified backup.
+        self.assertNotIn("Diary.txt", calls)
+        self.assertNotIn("Scene 1.txt", calls)
+        self.assertNotIn("Scene 2.txt", calls)
+        self.assertEqual(self.usb.data["Diary.txt"], b"personal diary" * 500)
+
+    def test_incomplete_backup_does_not_qualify_for_refresh(self):
+        self.usb.data["Diary.txt"] = b"diary must stay intact"
+        incomplete = Path(self.tmp.name) / "e213-sd-backup-99999999"
+        incomplete.mkdir()
+        (incomplete / "Chapter One.txt").write_bytes(
+            self.usb.data["Chapter One.txt"])
+        self.assertIsNone(personal.verified_matching_backup(
+            self.usb, Path(self.tmp.name), "*"))
+
     def test_two_projects_migrate_v1_manifest_without_touching_any_prose(self):
         # Existing project must remain linked when importing another, while
         # unsynced personal drafts remain outside either project.
