@@ -118,6 +118,41 @@ def set_chapter_outline(db, project_id: int, manifest: dict) -> bool:
     return True
 
 
+def verified_matching_backup(usb, destination: Path,
+                             manifest_hash: str) -> Path | None:
+    """Reuse a prior COMPLETE backup if every SHA still matches this SD card.
+
+    Refreshing chapter metadata shouldn't reread 100s of KB of diary/manuscripts
+    that were just copied and SHA-256 verified. An incomplete or stale backup
+    NEVER qualifies: every card document and .sync must match byte-for-byte.
+    """
+    if not destination.is_dir():
+        return None
+    current = usb.files()
+    required = set(current)
+    if manifest_hash != "*":
+        required.add(".sync")
+    candidates = sorted(destination.glob("e213-sd-backup-*"), reverse=True)[:8]
+    for folder in candidates:
+        if not folder.is_dir():
+            continue
+        try:
+            originals = [p for p in folder.iterdir() if p.is_file()]
+            if {p.name for p in originals} != required:
+                continue
+            if any(bridge.checksum((folder / name).read_bytes()) != revision
+                   for name, revision in current.items()):
+                continue
+            if manifest_hash != "*" and (
+                bridge.checksum((folder / ".sync").read_bytes()) != manifest_hash
+            ):
+                continue
+            return folder
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 def refresh_chapter_order(port: str, source: str, database: str,
                           project_id: int) -> str:
     db = db_manager(source, database)
@@ -132,7 +167,10 @@ def refresh_chapter_order(port: str, source: str, database: str,
         if not updated:
             return "Chapter/scene order is already up to date."
         BACKUP_PATH.mkdir(parents=True, exist_ok=True)
-        backup = bridge.backup_device(usb, BACKUP_PATH)
+        # A successful earlier "Back up E213" already protected the diary.
+        # Reuse it only if all current device file hashes and .sync match.
+        backup = (verified_matching_backup(usb, BACKUP_PATH, previous)
+                  or bridge.backup_device(usb, BACKUP_PATH))
         bridge.put_manifest(usb, manifest, previous)
         confirmed, _ = bridge.get_manifest(usb, project_id, project["name"])
         if confirmed.get("chapters") != manifest["chapters"]:
