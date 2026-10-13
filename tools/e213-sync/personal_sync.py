@@ -157,6 +157,144 @@ def import_scene(port: str, source: str, database: str, project_id: int,
     return with_usb(port, perform)
 
 
+def import_scenes(port: str, source: str, database: str, project_id: int,
+                  scene_ids: list[int]) -> str:
+    """Import selected scenes in one USB session, preserving every existing file.
+
+    An orphan left by a failed manifest write can be linked without uploading
+    again, but ONLY if its entire contents match the desktop scene. Commit and
+    verify each scene mapping before continuing so partial batches can resume.
+    """
+    ids = list(dict.fromkeys(scene_ids))
+    if not ids:
+        raise ValueError("Select at least one Plot n Jot scene.")
+    db = db_manager(source, database)
+    project = db.get_project(project_id)
+    if not project:
+        raise ValueError("Plot n Jot project is not available.")
+
+    titles = {int(item["id"]): f"{chapter['title']} / {item['title']}"
+              for chapter in db.get_full_manuscript_data(project_id)
+              for item in chapter["scenes"]}
+    scenes = []
+    for scene_id in ids:
+        scene = bridge.db_scene(db, project_id, scene_id)
+        content = (scene["content"] or "").encode("utf-8")
+        if len(content) > bridge.MAX_FILE:
+            raise ValueError(
+                f"{titles.get(scene_id, str(scene_id))} is {len(content)} bytes; "
+                f"E213 supports up to {bridge.MAX_FILE} bytes per document. "
+                "No documents were transferred."
+            )
+        scenes.append((scene_id, scene, content, suggest_filename(
+            titles.get(scene_id, f"Scene {scene_id}"))))
+
+    def run(usb):
+        available = usb.files()
+        manifest, previous = bridge.get_manifest(usb, project_id, project["name"])
+        if len(available) >= 200:
+            raise ValueError("E213 already has 200 documents.")
+        BACKUP_PATH.mkdir(parents=True, exist_ok=True)
+        backup = bridge.backup_device(usb, BACKUP_PATH)
+        report = [f"Verified E213 backup: {backup}"]
+        bound_ids = {int(row["scene_id"]) for row in manifest["scenes"].values()}
+        successful = 0
+        skipped = 0
+        reserved = set()
+
+        for scene_id, scene, content, suggested in scenes:
+            if scene_id in bound_ids:
+                report.append(f"ALREADY LINKED: scene #{scene_id}; skipped")
+                skipped += 1
+                continue
+
+            # For the normal first import, use the scene title. If several
+            # different scenes share a title, suffix the scene ID safely.
+            filename = suggested
+            if filename.casefold() in reserved:
+                stem = suggested[:-4]
+                suffix = f" - {scene_id}"
+                filename = f"{stem[:44-len(suffix)].rstrip()}{suffix}.txt"
+            if not bridge.NAME.fullmatch(filename):
+                raise ValueError(f"Cannot make a safe filename for scene #{scene_id}")
+
+            previous_name = next((n for n in available
+                                  if n.casefold() == filename.casefold()), None)
+            existed = previous_name is not None
+            if existed:
+                if previous_name in manifest["scenes"]:
+                    report.append(f"NAME TAKEN: {filename} linked to another scene; skipped #{scene_id}")
+                    skipped += 1
+                    continue
+                old_bytes, old_hash = usb.get(previous_name)
+                if old_bytes != content or old_hash != bridge.checksum(content):
+                    report.append(
+                        f"DIFFERENT CONTENT: {filename} already on SD; "
+                        f"scene #{scene_id} NOT overwritten or linked. "
+                        "Use single-scene import with a different title."
+                    )
+                    skipped += 1
+                    continue
+                filename = previous_name
+                report.append(f"RECOVERED: existing identical {filename}; no copy needed")
+            else:
+                if len(available) >= 200:
+                    report.append("SD FULL: 200-document limit reached; remaining scenes skipped")
+                    break
+
+            proposed = dict(manifest["scenes"])
+            proposed[filename] = {
+                "scene_id": int(scene_id),
+                "chapter_id": int(scene["chapter_id"]),
+                "revision": bridge.checksum(content)
+            }
+            staged_manifest = dict(manifest, scenes=proposed)
+            bridge.validate_manifest(staged_manifest, project_id)
+            if len(json.dumps(staged_manifest, ensure_ascii=False, indent=2).encode("utf-8")) > bridge.MAX_MANIFEST:
+                raise ValueError("The E213 sync mapping file is full (16 KiB). No further scenes imported.")
+
+            if not existed:
+                usb.put(filename, content, "*")
+                transferred, verified_hash = usb.get(filename)
+                if transferred != content or verified_hash != bridge.checksum(content):
+                    raise RuntimeError(
+                        f"{filename} was copied but failed byte-for-byte readback. "
+                        "Existing Plot n Jot content was not changed."
+                    )
+                available[filename] = verified_hash
+
+            try:
+                bridge.put_manifest(usb, staged_manifest, previous)
+            except Exception as exc:
+                done = "\n".join(report)
+                raise RuntimeError(
+                    f"Scene #{scene_id} ({filename}) is on SD, but its .sync "
+                    "mapping could not be saved. The document is preserved; "
+                    "run Scan E213 and Link selected (or retry the batch). "
+                    f"Underlying device error: {type(exc).__name__}: {exc}\n"
+                    f"Earlier results:\n{done}"
+                ) from exc
+
+            # Read back the on-device mapping before the next scene. This also
+            # detects a failed manifest commit even if the host saw SAVED.
+            confirmed, previous = bridge.get_manifest(usb, project_id, project["name"])
+            if confirmed["scenes"].get(filename) != proposed[filename]:
+                raise RuntimeError(
+                    f"The .sync link for {filename} could not be verified after saving. "
+                    "Stop here and rescan before retrying."
+                )
+            manifest = confirmed
+            bound_ids.add(scene_id)
+            reserved.add(filename.casefold())
+            successful += 1
+            report.append(f"IMPORTED + LINKED: scene #{scene_id} -> {filename}")
+
+        report.append(f"Completed: {successful} linked, {skipped} skipped.")
+        report.append("Original Plot n Jot scenes were not altered.")
+        return "\n".join(report)
+    return with_usb(port, run)
+
+
 def link_scene(port: str, source: str, database: str, project_id: int,
                filename: str, scene_id: int, prefer: str):
     """Link only: never overwrite the manuscript implicitly when linking."""
