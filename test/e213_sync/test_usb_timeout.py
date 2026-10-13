@@ -10,6 +10,7 @@ import plot_jot_sync as bridge
 class ScriptedSerial:
     def __init__(self, fail_data_at=None, fail_commit=False):
         self.sent = []
+        self.data_frame_sizes = []
         self.to_read = []
         self.fail_data_at = fail_data_at
         self.fail_commit = fail_commit
@@ -25,6 +26,11 @@ class ScriptedSerial:
         if cmd == "PUT":
             reply = "READY"
         elif cmd == "DATA":
+            self.data_frame_sizes.append(len(raw))
+            # Simulate a constrained ESP32 CDC RX queue; oversized DATA
+            # messages would stall waiting for bytes that were discarded.
+            if len(raw) > 64:
+                raise AssertionError(f"USB DATA frame exceeds 64 bytes: {len(raw)}")
             self.data_count += 1
             if self.data_count == self.fail_data_at:
                 reply = "ERR|timeout"
@@ -54,7 +60,7 @@ class UsbTimeoutTests(unittest.TestCase):
     def test_data_stall_names_file_phase_and_completed_bytes(self):
         serial = ScriptedSerial(fail_data_at=2)
         client = self.client(serial)
-        with self.assertRaisesRegex(RuntimeError, r"E213 upload Scene 2\.txt failed during data \(192/400 bytes acknowledged\): E213 refused command: timeout"):
+        with self.assertRaisesRegex(RuntimeError, r"E213 upload Scene 2\.txt failed during data \(24/400 bytes acknowledged\): E213 refused command: timeout"):
             client.put("Scene 2.txt", b"z" * 400, "*")
         self.assertEqual(serial.data_count, 2)
         self.assertFalse(any(v.endswith("|END") for v in serial.sent))
@@ -71,7 +77,22 @@ class UsbTimeoutTests(unittest.TestCase):
         content = b"test manuscript " * 40
         client.put("Scene 3.txt", content, "*")
         self.assertEqual(bytes(serial.uploaded), content)
+        self.assertTrue(all(0 < n <= 64 for n in serial.data_frame_sizes))
         self.assertTrue(serial.sent[-1].endswith("|END"))
+
+    def test_previous_first_frame_overflow_reproduced_and_fixed(self):
+        # Old encoding: 192 raw bytes -> 256 Base64 + 16-byte framing
+        # = 272-byte DATA line. The first packet could exceed the CDC
+        # RX queue and cause precisely 0 bytes acknowledged / timeout.
+        import base64
+        old_frame = (bridge.PREFIX + "DATA|" +
+                     base64.b64encode(b"x" * 192).decode() + "\n").encode()
+        self.assertEqual(len(old_frame), 272)
+        client_serial = ScriptedSerial()
+        self.client(client_serial).put("Browsing the Web.txt", b"x" * 3005, "*")
+        self.assertEqual(len(client_serial.uploaded), 3005)
+        self.assertEqual(len(client_serial.data_frame_sizes), 126)
+        self.assertTrue(all(n <= 64 for n in client_serial.data_frame_sizes))
 
     def test_rejects_bad_names_before_usb_transfer(self):
         serial = ScriptedSerial()
