@@ -14,6 +14,8 @@
 #include "WriterScreenGeometry.h"
 #include "WriterEditing.h"
 #include "BatteryStatus.h"
+#include "WriterNames.h"
+#include "SyncManifest.h"
 
 // E213 writer bring-up:
 // - external SPI microSD required for all working documents and sync metadata
@@ -83,6 +85,11 @@ std::string activeName = "Draft-001.txt";
 std::vector<std::string> fileList;
 size_t fileIndex = 0;
 bool fileMenu = false;
+enum class NameMode { None, Create, Rename };
+NameMode nameMode = NameMode::None;
+std::string nameInput;
+std::string renameSource;
+std::string nameError;
 size_t cursor = 0;
 bool storageReady = false;
 bool dirty = false;
@@ -208,7 +215,39 @@ void renderFilePicker() {
   lastRenderAt = millis();
 }
 
+void renderNameEditor() {
+  prepareDisplayFrame();
+  display.setCursor(kTextLeft, writergeometry::kHeaderTop);
+  display.print(nameMode == NameMode::Create ? "NEW DOCUMENT" : "RENAME DOCUMENT");
+  display.drawLine(0, writergeometry::kHeaderDivider,
+                   display.width() - 1, writergeometry::kHeaderDivider, BLACK);
+  display.setCursor(kTextLeft, 24);
+  display.print("Document title (without .txt):");
+  display.setCursor(kTextLeft, 43);
+  display.print(nameMode == NameMode::Create ? "New title:" : "Rename to:");
+  display.setCursor(kTextLeft, 57);
+  const std::string shown = nameInput.size() > 36 ? "~" + nameInput.substr(nameInput.size() - 35) : nameInput;
+  display.print(shown.empty() ? "_" : shown.c_str());
+  const int caretX = std::min(display.width() - 2,
+                             kTextLeft + static_cast<int>(shown.size()) * writergeometry::kGlyphWidth);
+  if (!shown.empty()) display.drawLine(caretX, 57, caretX, 64, BLACK);
+  display.setCursor(kTextLeft, 77);
+  if (!nameError.empty()) display.print(cropped(nameError, 39).c_str());
+  else if (nameMode == NameMode::Create)
+    display.print("Blank title = next Draft number");
+  else
+    display.print("Linked Plot n Jot files stay named");
+  display.drawLine(0, writergeometry::footerDivider(display.height()),
+                   display.width()-1, writergeometry::footerDivider(display.height()), BLACK);
+  display.setCursor(kTextLeft, writergeometry::footerTop(display.height()));
+  display.print("ENTER: save  ESC: cancel");
+  display.update();
+  lastRenderAt = millis();
+  renderPending = false;
+}
+
 void renderWriter(const bool forceFull = false) {
+  if (nameMode != NameMode::None) { renderNameEditor(); return; }
   if (!storageReady) {
     prepareDisplayFrame(forceFull);
     display.setCursor(kTextLeft, writergeometry::kHeaderTop);
@@ -450,13 +489,125 @@ void saveAndSleep() {
   display.sleepUntilReset();
 }
 
+void beginNameEditor(NameMode mode) {
+  if (!storageReady || serialSync.busy()) return;
+  if (dirty && !saveDraft()) {
+    Serial.println("Cannot edit title while document save is failing");
+    return;
+  }
+  renameSource = (mode == NameMode::Rename && fileMenu && fileIndex < fileList.size())
+      ? fileList[fileIndex] : activeName;
+  nameInput = mode == NameMode::Rename ? writernames::stem(renameSource) : "";
+  nameError.clear();
+  nameMode = mode;
+  renderPending = true;
+  lastKeyAt = millis();
+  renderNameEditor();
+}
+
+void confirmNameEditor() {
+  if (nameMode == NameMode::None || serialSync.busy()) return;
+  std::string newName = nameMode == NameMode::Create && nameInput.empty()
+      ? writerfiles::nextName() : writernames::filename(nameInput);
+  if (newName.empty()) {
+    nameError = "Title: 1-44 letters/numbers/-/_";
+    return;
+  }
+  if (nameMode == NameMode::Rename && newName == renameSource) {
+    nameMode = NameMode::None; nameError.clear(); return;
+  }
+  for (const auto& existing : writerfiles::list()) {
+    if (writernames::nameTaken(existing, newName)) {
+      nameError = "A document already uses that title";
+      return;
+    }
+  }
+  if (nameMode == NameMode::Create) {
+    if (!writerfiles::save(newName, "") || !switchDraft(newName)) {
+      nameError = "Could not create document on SD";
+      return;
+    }
+  } else {
+    // Existing Plot n Jot .sync links use the exact filename. Do not silently
+    // break a scene link or modify a remote manuscript by renaming here.
+    std::string manifestText;
+    if (writerfiles::readManifest(manifestText)) {
+      const auto parsed = e213::sync::parseManifest(manifestText);
+      if (!parsed.isManaged()) {
+        nameError = "Cannot rename: .sync unreadable";
+        return;
+      }
+      for (const auto& binding : parsed.manifest.scenes) {
+        if (binding.filename == renameSource) {
+          nameError = "Linked: unlink in sync app first";
+          return;
+        }
+      }
+    }
+    if (!writerfiles::renameDraft(renameSource, newName)) {
+      nameError = "Rename failed: SD file preserved";
+      return;
+    }
+    if (renameSource == activeName) {
+      activeName = newName;
+      if (!writerfiles::saveActiveName(newName))
+        Serial.println("Renamed draft; active preference could not be saved");
+    }
+    fileList = writerfiles::list();
+    auto found = std::find(fileList.begin(), fileList.end(), newName);
+    fileIndex = found != fileList.end() ? static_cast<size_t>(found - fileList.begin()) : 0;
+  }
+  Serial.printf("SD manuscript title saved: %s\n", newName.c_str());
+  nameMode = NameMode::None;
+  nameInput.clear();
+  nameError.clear();
+  renderPending = true;
+  lastKeyAt = millis();
+}
+
+void handleNameKey(const BleWriterKeyboard::KeyEvent& event) {
+  switch (event.type) {
+    case BleWriterKeyboard::KeyType::Escape:
+      nameMode = NameMode::None; nameError.clear(); break;
+    case BleWriterKeyboard::KeyType::Enter:
+      confirmNameEditor(); break;
+    case BleWriterKeyboard::KeyType::Backspace:
+      if (!nameInput.empty()) nameInput.pop_back();
+      nameError.clear(); break;
+    case BleWriterKeyboard::KeyType::Character: {
+      const char c = event.character;
+      if (nameInput.size() < 44 &&
+          ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '-' || c == '_' || c == ' ')) {
+        nameInput.push_back(c);
+        nameError.clear();
+      } else {
+        nameError = "Use letters, numbers, space, - or _";
+      }
+      break;
+    }
+    default: break;
+  }
+  renderPending = true;
+  lastKeyAt = millis();
+}
+
 void handleKeyboardEvents() {
   BleWriterKeyboard::KeyEvent event;
   while (keyboard.popEvent(event)) {
     // An absent or failed SD never turns the editor into unsafe RAM-only mode.
     if (!storageReady) continue;
     if (event.type == BleWriterKeyboard::KeyType::Sleep) {
+      if (nameMode != NameMode::None) { nameMode = NameMode::None; nameError.clear(); }
       saveAndSleep();
+      continue;
+    }
+    if (nameMode != NameMode::None) {
+      handleNameKey(event);
+      continue;
+    }
+    if (event.type == BleWriterKeyboard::KeyType::RenameFile) {
+      beginNameEditor(NameMode::Rename);
       continue;
     }
     if (event.type == BleWriterKeyboard::KeyType::OpenFiles) {
@@ -473,8 +624,7 @@ void handleKeyboardEvents() {
       continue;
     }
     if (event.type == BleWriterKeyboard::KeyType::NewFile) {
-      if (!createDraft()) Serial.println("Cannot create draft; check storage");
-      renderPending = true;
+      beginNameEditor(NameMode::Create);
       continue;
     }
     if (event.type == BleWriterKeyboard::KeyType::SaveFile) {
@@ -536,10 +686,12 @@ void handleButtons() {
   const ButtonEvent next = nextButton.poll();
   const ButtonEvent select = selectButton.poll();
   if (select == ButtonEvent::Long) {
+    if (nameMode != NameMode::None) { nameMode = NameMode::None; nameError.clear(); }
     saveAndSleep(); // Always permit wired B2 save-and-sleep, even without keyboard.
     return;
   }
   if (next == ButtonEvent::None && select == ButtonEvent::None) return;
+  if (nameMode != NameMode::None) return; // Naming requires the BLE keyboard.
 
   if (fileMenu) {
     if (next == ButtonEvent::Long) {
