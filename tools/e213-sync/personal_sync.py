@@ -65,7 +65,8 @@ def with_usb(port: str, operation):
         device.close()
 
 
-def snapshot(port: str, source: str, database: str, project_id: int):
+def snapshot(port: str, source: str, database: str, project_id: int,
+             include_storage: bool = False):
     db = db_manager(source, database)
     project = db.get_project(project_id)
     if not project:
@@ -74,9 +75,20 @@ def snapshot(port: str, source: str, database: str, project_id: int):
         docs = sorted(usb.files())
         manifest, _ = bridge.get_manifest(usb, project_id, project["name"])
         bindings = manifest["scenes"]
-        return [(name, str(bindings[name]["scene_id"]) if name in bindings else "")
+        rows = [(name, str(bindings[name]["scene_id"]) if name in bindings else "")
                 for name in docs]
+        return (rows, usb.storage()) if include_storage else rows
     return with_usb(port, inspect)
+
+
+def display_storage(total: int, used: int) -> str:
+    """Readable FAT volume numbers, in binary GiB/MiB (no rounding to zero)."""
+    free = total - used
+    divisor = 1024 ** 3 if total >= 1024 ** 3 else 1024 ** 2
+    unit = "GiB" if divisor == 1024 ** 3 else "MiB"
+    percent = 100 * used / total
+    return (f"SD: {free / divisor:.2f} {unit} free of "
+            f"{total / divisor:.2f} {unit} ({percent:.1f}% used)")
 
 
 def suggest_filename(scene_label: str) -> str:
@@ -529,6 +541,7 @@ class PersonalSyncApp:
         self.scene_choice = tk.StringVar()
         self.prefer = tk.StringVar(value="E213 text wins")
         self.status = tk.StringVar(value="Connect E213 by USB, then load your projects.")
+        self.storage_text = tk.StringVar(value="SD capacity: scan E213 to check")
         self._build()
         self.root.after(100, self._poll)
         self.root.after(150, self.refresh_ports)
@@ -545,6 +558,9 @@ class PersonalSyncApp:
         ttk.Label(outer, text="Plot n Jot database").grid(row=2, column=0, sticky="w", pady=4)
         ttk.Entry(outer, textvariable=self.database).grid(row=2, column=1, sticky="ew", padx=8)
         ttk.Button(outer, text="Browse…", command=self.browse_database).grid(row=2, column=2)
+
+        ttk.Label(outer, textvariable=self.storage_text).grid(
+            row=3, column=0, columnspan=3, sticky="w", pady=(0, 4))
 
         controls = ttk.Frame(outer)
         controls.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(12, 8))
@@ -725,13 +741,16 @@ class PersonalSyncApp:
     def scan(self):
         args = self._args_or_message()
         if not args: return
-        def done(files):
+        def done(result):
+            files, (total, used) = result
+            self.storage_text.set(display_storage(total, used))
             self.tree.delete(*self.tree.get_children())
             for filename, scene_id in files:
                 self.tree.insert("", "end", iid=filename, values=(filename, scene_id or "Not linked"))
             self.preview_key = None
             self.status.set(f"Found {len(files)} E213 document(s).")
-        self._run("Reading SD drafts and links…", lambda: snapshot(*args), done)
+        self._run("Reading SD drafts, links and capacity…",
+                  lambda: snapshot(*args, include_storage=True), done)
 
     def open_multi_import(self):
         args = self._args_or_message()
