@@ -181,6 +181,20 @@ bool begin() {
 
 bool ready() { return mounted && !migrationBlocked; }
 
+bool storageUsage(uint64_t& totalBytes, uint64_t& usedBytes) {
+  totalBytes = 0;
+  usedBytes = 0;
+  if (!ready()) return false;
+  // FAT volume's usable space, rather than raw SD.cardSize(). Includes
+  // /drafts, /.sync, previous-version .bak files and any other SD content.
+  const uint64_t total = SD.totalBytes();
+  const uint64_t used = SD.usedBytes();
+  if (total == 0 || used > total) return false;
+  totalBytes = total;
+  usedBytes = used;
+  return true;
+}
+
 bool validName(const std::string& name) {
   if (name.size() < 5 || name.size() > 48 ||
       name.substr(name.size() - 4) != ".txt")
