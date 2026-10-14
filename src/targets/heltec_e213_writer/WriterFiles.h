@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -12,6 +13,9 @@ constexpr size_t kMaxDocuments = 200;
 // Hardware: external SPI microSD module. Proposed E213 V1.1 GPIOs; validate wiring.
 bool begin();
 bool ready();
+// Read FAT volume capacity and allocation, including backup/temp files.
+// These are filesystem usable bytes, not the SD card's marketed raw capacity.
+bool storageUsage(uint64_t& totalBytes, uint64_t& usedBytes);
 bool importLegacyFlashDrafts(); // One-time, copy-only import; never erases flash.
 bool validName(const std::string& name);
 std::vector<std::string> list();
