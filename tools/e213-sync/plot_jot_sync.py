@@ -209,6 +209,31 @@ class USB:
             return parts
         raise TimeoutError("E213 response timed out; check cable/port and awake firmware")
 
+    def storage(self) -> tuple[int, int]:
+        """Read FAT usable capacity and currently allocated bytes (read-only)."""
+        self.send("SPACE")
+        try:
+            response = self.next(timeout=15)
+        except RuntimeError as exc:
+            if "unknown-command" in str(exc):
+                raise RuntimeError(
+                    "E213 firmware does not support SD storage statistics yet. "
+                    "Flash the latest dev heltec_e213_writer firmware."
+                ) from exc
+            raise
+        if len(response) != 3 or response[0] != "SPACE":
+            raise RuntimeError("E213 returned an invalid SD capacity response")
+        try:
+            if not all(value.isascii() and value.isdecimal()
+                       for value in response[1:]):
+                raise ValueError("nondecimal byte count")
+            total, used = map(int, response[1:])
+        except ValueError as exc:
+            raise RuntimeError("E213 returned a nonnumeric SD capacity") from exc
+        if total <= 0 or used < 0 or used > total or total > (1 << 50):
+            raise RuntimeError("E213 returned inconsistent SD capacity")
+        return total, used
+
     def files(self) -> dict[str, str]:
         self.send("LIST")
         files = {}
