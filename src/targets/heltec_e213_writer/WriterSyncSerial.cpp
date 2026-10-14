@@ -218,6 +218,16 @@ void WriterSyncSerial::onLine(const std::string& line) {
     emit("ACK"); // Backpressure: prevent overrunning USB buffers while e-ink refreshes.
     return;
   }
+  if (args[0] == "SPACE" && args.size() == 1) {
+    uint64_t total = 0, used = 0;
+    if (!writerfiles::storageUsage(total, used)) {
+      emit("ERR|storage-unavailable");
+    } else {
+      // 64-bit byte counts; this command only reads filesystem allocation.
+      emit("SPACE|" + std::to_string(total) + "|" + std::to_string(used));
+    }
+    return;
+  }
   if (args[0] == "HELLO" && args.size() == 1) { emit("READY"); return; }
   if (args[0] == "LIST" && args.size() == 1) {
     for (const auto& name : writerfiles::list()) {
