@@ -77,7 +77,15 @@ def snapshot(port: str, source: str, database: str, project_id: int,
         bindings = manifest["scenes"]
         rows = [(name, str(bindings[name]["scene_id"]) if name in bindings else "")
                 for name in docs]
-        return (rows, usb.storage()) if include_storage else rows
+        if not include_storage:
+            return rows
+        try:
+            capacity = usb.storage()
+        except (RuntimeError, TimeoutError):
+            # An older firmware can still scan/list/backup even if it lacks
+            # SPACE. Don't turn a read-only capacity indicator into a blocker.
+            capacity = None
+        return rows, capacity
     return with_usb(port, inspect)
 
 
@@ -742,8 +750,10 @@ class PersonalSyncApp:
         args = self._args_or_message()
         if not args: return
         def done(result):
-            files, (total, used) = result
-            self.storage_text.set(display_storage(total, used))
+            files, capacity = result
+            self.storage_text.set(
+                display_storage(*capacity) if capacity is not None
+                else "SD capacity unavailable (update E213 writer firmware)")
             self.tree.delete(*self.tree.get_children())
             for filename, scene_id in files:
                 self.tree.insert("", "end", iid=filename, values=(filename, scene_id or "Not linked"))
