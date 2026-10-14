@@ -113,6 +113,30 @@ Replace COM10 with your actual E213 port. Close the serial monitor before sync.
 - Reboot restores the last document via SD /.active
 - A failed save blocks switching documents; never silently fall back to flash
 
+## SD capacity at a glance
+
+The E213 displays free SD space **only while browsing documents**, not on
+the distraction-free typing screen. Press **Ctrl+O** (or open the file picker
+using wired buttons) to see a small footer readout such as `12.4G free`.
+The value is fetched when opening the browser and is not polled with every
+keypress or e-ink refresh.
+
+**E213 Personal Sync** shows `SD: 12.40 GiB free of 14.80 GiB (16.2% used)`
+after **Scan E213**, and updates it again after a successful sync's scan.
+It reads the FAT volume's actual usable/allocated bytes using a new
+read-only `E213SYNC1|SPACE` USB command. This includes files beyond the
+visible `.txt` documents (such as backup files and metadata). Card
+manufacturer capacity is different from formatted usable space.
+
+Storage figures require an updated `heltec_e213_writer` firmware plus the
+latest Linux app. Older firmware simply displays `SD capacity unavailable`
+in the app; Scan, backups, and manuscript operations remain available.
+No file is written or deleted by the capacity query.
+
+Note: This is different from the per-document 128-KiB editor limit or
+the maximum of 200 visible documents. Plenty of SD space does not
+remove those firmware limits.
+
 ## My Documents and multiple Plot n Jot projects on the E213
 
 **Ctrl+O now opens a root folder picker** (also supported by external B1/B2):
