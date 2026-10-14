@@ -80,6 +80,21 @@ class PersonalSyncSafetyTests(unittest.TestCase):
             self.addCleanup(p.stop)
         self.args = ("/dev/ttyACM0", "/source", "/database", 42)
 
+    def test_scan_storage_display_and_readonly_fallback(self):
+        docs = {"Personal Diary.txt": b"unsynced diary"}
+        self.usb.data.update(docs)
+        self.usb.storage = lambda: (16 * 1024 ** 3, 4 * 1024 ** 3)
+        rows, space = personal.snapshot(*self.args, include_storage=True)
+        self.assertIn(("Personal Diary.txt", ""), rows)
+        self.assertEqual(space, (16 * 1024 ** 3, 4 * 1024 ** 3))
+        self.assertIn("12.00 GiB free", personal.display_storage(*space))
+        self.assertIn("25.0% used", personal.display_storage(*space))
+        self.usb.storage = lambda: (_ for _ in ()).throw(
+            RuntimeError("E213 refused command: unknown-command"))
+        rows, space = personal.snapshot(*self.args, include_storage=True)
+        self.assertIn(("Personal Diary.txt", ""), rows)
+        self.assertIsNone(space)
+
     def test_link_creates_manifest_without_touching_document_or_scene(self):
         msg = personal.link_scene(*self.args, "Chapter One.txt", 101, "device")
         self.assertIn("Linked", msg)
