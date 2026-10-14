@@ -92,6 +92,9 @@ size_t projectIndex = 0;
 bool fileMenu = false;
 bool chapterMenu = false;
 bool projectMenu = false;
+uint64_t pickerSpaceTotal = 0;
+uint64_t pickerSpaceUsed = 0;
+bool pickerSpaceKnown = false;
 enum class NameMode { None, Create, Rename };
 NameMode nameMode = NameMode::None;
 std::string nameInput;
@@ -207,6 +210,10 @@ void renderPairing(const bool forceFull = false) {
 // The file picker is a non-destructive VIRTUAL hierarchy. All SD manuscripts
 // remain in /drafts, so old project links and personal diaries remain intact.
 void openFileBrowser() {
+  // Query the card only on opening the picker, not on every keypress or
+  // e-ink refresh. SD capacity is display-only and doesn't block writing.
+  pickerSpaceKnown = writerfiles::storageUsage(
+      pickerSpaceTotal, pickerSpaceUsed);
   fileList = writerfiles::list();
   std::vector<writeroutline::Project> desired;
   std::string json;
@@ -369,9 +376,26 @@ void renderFilePicker() {
   display.drawLine(0, writergeometry::footerDivider(display.height()),
                    display.width() - 1, writergeometry::footerDivider(display.height()), BLACK);
   display.setCursor(kTextLeft, writergeometry::footerTop(display.height()));
-  display.print(projectMenu ? "ENTER: PROJECT  ESC: CLOSE"
-                            : chapterMenu ? "ENTER: SCENES  ESC: BACK"
-                                          : "ENTER: OPEN  ESC: BACK");
+  display.print("ENTER:OPEN ESC:BACK");
+  if (pickerSpaceKnown) {
+    const uint64_t freeBytes = pickerSpaceTotal - pickerSpaceUsed;
+    // The 250px screen has room for a compact free-space number at right.
+    // Do not show a misleading figure if FAT reports no volume capacity.
+    char status[24] = {};
+    const double gib = static_cast<double>(freeBytes) /
+                       (1024.0 * 1024.0 * 1024.0);
+    const double mib = static_cast<double>(freeBytes) / (1024.0 * 1024.0);
+    if (gib >= 1.0)
+      snprintf(status, sizeof(status), "%.1fG free", gib);
+    else
+      snprintf(status, sizeof(status), "%.0fM free", mib);
+    const size_t chars = std::string(status).size();
+    const int statusX = display.width() -
+        static_cast<int>(chars) * writergeometry::kGlyphWidth -
+        writergeometry::kLeft;
+    display.setCursor(statusX, writergeometry::footerTop(display.height()));
+    display.print(status);
+  }
   display.update();
   renderPending = false;
   lastRenderAt = millis();
